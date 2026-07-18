@@ -1,0 +1,16 @@
+node_modules
+dist
+sessions
+webhooks
+.git
+.gitignore
+.env
+.env.*
+*.md
+.agents
+.codegraph
+opencode.json
+skills-lock.json
+.vscode
+.idea
+.DS_Store

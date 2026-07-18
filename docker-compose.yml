@@ -1,0 +1,22 @@
+services:
+  app:
+    build: .
+    container_name: whatsapp-gateway
+    ports:
+      - "3000:3000"
+    env_file:
+      - .env
+    volumes:
+      - sessions:/app/sessions
+      - webhooks:/app/webhooks
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:3000/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+volumes:
+  sessions:
+  webhooks:
