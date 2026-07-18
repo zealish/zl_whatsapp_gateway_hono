@@ -1,5 +1,4 @@
-# Stage 1: Build
-FROM node:20-alpine AS builder
+FROM node:26-alpine AS builder
 
 RUN corepack enable && corepack prepare pnpm@latest --activate
 
@@ -12,8 +11,7 @@ COPY tsconfig.json ./
 COPY src ./src
 RUN pnpm build
 
-# Stage 2: Production
-FROM node:20-alpine
+FROM node:26-alpine
 
 RUN corepack enable && corepack prepare pnpm@latest --activate
 
