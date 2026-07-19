@@ -2,20 +2,29 @@
  * OpenAPI 3.1 spec for WhatsApp API Gateway.
  * Hand-written from the same Zod schemas used for validation.
  */
-export const openApiSpec = {
-  openapi: '3.1.0',
-  info: {
-    title: 'WhatsApp API Gateway',
-    version: '2.0.0',
-    description:
-      'REST API gateway for WhatsApp Web powered by Baileys and Hono. ' +
-      'Manage sessions, send/receive messages, manage groups, configure webhooks.',
-    contact: { name: 'API Support' },
-    license: { name: 'MIT' },
-  },
-  servers: [
-    { url: 'http://localhost:3000', description: 'Local development' },
-  ],
+
+interface OpenApiSpecOptions {
+  BASE_URL: string
+}
+
+export function createOpenApiSpec(config: OpenApiSpecOptions) {
+  return {
+    openapi: '3.1.0',
+    info: {
+      title: 'WhatsApp API Gateway',
+      version: '3.0.0',
+      description:
+        'REST API gateway for WhatsApp Web powered by Baileys and Hono. ' +
+        'Manage sessions, send/receive messages, manage groups, configure webhooks.\n\n' +
+        '**New in v3:** Initial history synchronization (contacts, chats, messages) via webhooks. ' +
+        'Persistent SQLite-backed event queue with automatic retries and dead letter queue. ' +
+        'Per-instance ordered delivery with idempotent event IDs.',
+      contact: { name: 'API Support' },
+      license: { name: 'MIT' },
+    },
+    servers: [
+      { url: config.BASE_URL, description: 'Current server' },
+    ],
   tags: [
     { name: 'Health', description: 'Health check' },
     { name: 'Session', description: 'WhatsApp session management' },
@@ -23,6 +32,7 @@ export const openApiSpec = {
     { name: 'Contact', description: 'Contact information' },
     { name: 'Group', description: 'Group management' },
     { name: 'Webhook', description: 'Webhook configuration' },
+    { name: 'DLQ', description: 'Dead letter queue — inspect and replay failed webhook deliveries' },
   ],
   components: {
     securitySchemes: {
@@ -461,7 +471,20 @@ export const openApiSpec = {
         properties: {
           url: { type: 'string', format: 'uri', example: 'https://example.com/webhook' },
           secret: { type: 'string', description: 'HMAC-SHA256 signing secret' },
-          events: { type: 'array', items: { type: 'string' }, description: 'Subscribed events (all if empty)' },
+          events: {
+            type: 'array',
+            items: { type: 'string' },
+            description:
+              'Subscribed events (all if empty). Canonical names preferred. Legacy names supported for backward compatibility.\n\n' +
+              '**Canonical events:** messages.created, messages.updated, messages.deleted, messages.reaction, ' +
+              'contacts.updated, contacts.sync, groups.updated, group-participants.updated, receipts.updated, ' +
+              'connection.update, blocklist.set, blocklist.updated, call, ' +
+              'chats.sync, messages.sync, history.progress, history.finished\n\n' +
+              '**Legacy (deprecated):** messages.upsert, messages.update, messages.delete, ' +
+              'contacts.upsert, contacts.update, groups.upsert, groups.update, ' +
+              'group-participants.update, message-receipt.update, blocklist.update, creds.update',
+            example: ['messages.created', 'history.finished', 'connection.update'],
+          },
           createdAt: { type: 'number' },
         },
         required: ['url', 'createdAt'],
@@ -471,9 +494,63 @@ export const openApiSpec = {
         properties: {
           url: { type: 'string', format: 'uri', example: 'https://example.com/webhook' },
           secret: { type: 'string', minLength: 16, maxLength: 256 },
-          events: { type: 'array', items: { type: 'string' }, example: ['messages.upsert', 'connection.update'] },
+          events: {
+            type: 'array',
+            items: { type: 'string' },
+            example: ['messages.created', 'contacts.sync', 'history.finished', 'connection.update'],
+            description: 'Events to subscribe to. Use canonical names (recommended) or legacy names.',
+          },
         },
         required: ['url'],
+      },
+
+      // ── Gateway Event Envelope ──
+      GatewayEventEnvelope: {
+        type: 'object',
+        description: 'Standardized webhook delivery payload. All events use this envelope.',
+        properties: {
+          eventId: { type: 'string', format: 'uuid', example: '01923abc-def0-7891-2345-67890abcdef0', description: 'UUIDv7 — unique, time-ordered, idempotency key' },
+          instanceId: { type: 'string', example: 'my-session', description: 'Session/instance that produced this event' },
+          sequence: { type: 'number', example: 3842, description: 'Monotonically increasing per instance — for ordering verification' },
+          historySessionId: { type: 'string', format: 'uuid', description: 'Present only for sync events — correlates all events from one history sync session' },
+          event: { type: 'string', example: 'messages.created', description: 'Event name (canonical or legacy depending on subscription)' },
+          timestamp: { type: 'number', example: 1719000000000, description: 'Epoch milliseconds when envelope was created' },
+          payload: { description: 'Event-specific payload data' },
+        },
+        required: ['eventId', 'instanceId', 'sequence', 'event', 'timestamp', 'payload'],
+      },
+
+      // ── Webhook Delivery Headers ──
+      WebhookDeliveryHeaders: {
+        type: 'object',
+        description: 'HTTP headers included with every webhook delivery.',
+        properties: {
+          'Content-Type': { type: 'string', example: 'application/json' },
+          'X-Instance-Id': { type: 'string', example: 'my-session', description: 'Session ID' },
+          'X-Event': { type: 'string', example: 'messages.created', description: 'Event name' },
+          'X-Timestamp': { type: 'string', example: '1719000000000', description: 'Envelope timestamp' },
+          'X-Sequence': { type: 'string', example: '3842', description: 'Sequence number' },
+          'X-Delivery-Id': { type: 'string', format: 'uuid', description: 'Event ID (UUIDv7)' },
+          'X-Signature': { type: 'string', example: 'sha256=abc123...', description: 'HMAC-SHA256 signature (only if secret configured)' },
+        },
+      },
+
+      // ── Dead Letter ──
+      DeadLetter: {
+        type: 'object',
+        description: 'A webhook delivery that permanently failed after maximum retries.',
+        properties: {
+          id: { type: 'string', format: 'uuid' },
+          instance_id: { type: 'string', example: 'my-session' },
+          sequence: { type: 'number', example: 1234 },
+          webhook_url: { type: 'string', format: 'uri' },
+          payload: { type: 'string', description: 'JSON string of the GatewayEventEnvelope' },
+          attempts: { type: 'number', example: 5 },
+          last_error: { type: 'string', example: 'HTTP 500' },
+          created_at: { type: 'number', description: 'Epoch ms when delivery was first created' },
+          failed_at: { type: 'number', description: 'Epoch ms when moved to DLQ' },
+        },
+        required: ['id', 'instance_id', 'sequence', 'webhook_url', 'payload', 'attempts', 'created_at', 'failed_at'],
       },
     },
   },
@@ -1045,5 +1122,102 @@ export const openApiSpec = {
         },
       },
     },
-  },
-} as const
+
+    // ── DLQ (Dead Letter Queue) ──
+    '/dlq': {
+      get: {
+        tags: ['DLQ'],
+        summary: 'List dead letters (failed webhook deliveries)',
+        description:
+          'Returns all webhook deliveries that permanently failed after maximum retries (5 attempts). ' +
+          'Use ?instanceId= to filter by session.',
+        parameters: [
+          { name: 'instanceId', in: 'query', required: false, schema: { type: 'string' }, description: 'Filter by session ID' },
+        ],
+        responses: {
+          200: {
+            description: 'List of dead letters',
+            content: {
+              'application/json': {
+                schema: {
+                  type: 'object',
+                  properties: {
+                    success: { type: 'boolean', example: true },
+                    data: { type: 'array', items: { $ref: '#/components/schemas/DeadLetter' } },
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
+    },
+    '/dlq/{id}/replay': {
+      post: {
+        tags: ['DLQ'],
+        summary: 'Replay a dead letter (re-enqueue for delivery)',
+        description: 'Moves the dead letter back to the delivery queue with a fresh retry counter. The webhook will be redelivered.',
+        parameters: [
+          { name: 'id', in: 'path', required: true, schema: { type: 'string' }, description: 'Dead letter ID' },
+        ],
+        responses: {
+          200: {
+            description: 'Dead letter replayed',
+            content: {
+              'application/json': {
+                schema: {
+                  type: 'object',
+                  properties: {
+                    success: { type: 'boolean', example: true },
+                    data: {
+                      type: 'object',
+                      properties: {
+                        replayed: { type: 'boolean', example: true },
+                        id: { type: 'string' },
+                      },
+                    },
+                  },
+                },
+              },
+            },
+          },
+          404: { description: 'Dead letter not found', content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } } },
+        },
+      },
+    },
+    '/dlq/{id}': {
+      delete: {
+        tags: ['DLQ'],
+        summary: 'Discard a dead letter',
+        description: 'Permanently removes the dead letter. The webhook delivery will not be retried.',
+        parameters: [
+          { name: 'id', in: 'path', required: true, schema: { type: 'string' }, description: 'Dead letter ID' },
+        ],
+        responses: {
+          200: {
+            description: 'Dead letter discarded',
+            content: {
+              'application/json': {
+                schema: {
+                  type: 'object',
+                  properties: {
+                    success: { type: 'boolean', example: true },
+                    data: {
+                      type: 'object',
+                      properties: {
+                        deleted: { type: 'boolean', example: true },
+                        id: { type: 'string' },
+                      },
+                    },
+                  },
+                },
+              },
+            },
+          },
+          404: { description: 'Dead letter not found', content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } } },
+        },
+      },
+    },
+    },
+  } as const
+}

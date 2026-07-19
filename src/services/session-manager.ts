@@ -7,6 +7,7 @@ import type { SessionInfo, IWhatsAppService } from '../types/whatsapp.js'
 import type { WebhookDispatcher } from '../webhook/dispatcher.js'
 import { ConnectionManager } from '../whatsapp/connection-manager.js'
 import { MessageHandler } from '../whatsapp/message-handler.js'
+import type { BatchConfig } from '../whatsapp/history-sync-handler.js'
 import { ConflictError, NotFoundError } from '../lib/errors.js'
 
 interface Session {
@@ -22,16 +23,23 @@ export class SessionManager {
   private sessions = new Map<string, Session>()
   private sessionsDir: string
   private webhookDispatcher: WebhookDispatcher
+  private batchConfig: BatchConfig
   private logger: pino.Logger
 
   constructor(
     sessionsDir: string,
     webhookDispatcher: WebhookDispatcher,
-    logger: pino.Logger
+    logger: pino.Logger,
+    batchConfig?: BatchConfig
   ) {
     this.sessionsDir = sessionsDir
     this.webhookDispatcher = webhookDispatcher
     this.logger = logger.child({ module: 'SessionManager' })
+    this.batchConfig = batchConfig ?? {
+      messages: 250,
+      contacts: 500,
+      chats: 200,
+    }
   }
 
   /**
@@ -197,6 +205,7 @@ export class SessionManager {
       sessionId,
       connectionManager.adapter,
       this.webhookDispatcher,
+      this.batchConfig,
       this.logger
     )
 

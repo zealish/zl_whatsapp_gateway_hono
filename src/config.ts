@@ -5,12 +5,21 @@ const configSchema = z.object({
   HOST: z.string().default('0.0.0.0'),
   NODE_ENV: z.enum(['development', 'production', 'test']).default('development'),
 
+  BASE_URL: z
+    .string()
+    .default('/')
+    .transform((v) => (v.startsWith('/') ? v : `/${v}`))
+    .transform((v) => (v.endsWith('/') && v.length > 1 ? v.slice(0, -1) : v)),
+
   API_KEY: z.string().min(16, 'API_KEY must be at least 16 characters'),
 
   SESSIONS_DIR: z.string().default('./sessions'),
   WEBHOOK_DIR: z.string().default('./webhooks'),
-  WEBHOOK_MAX_RETRIES: z.coerce.number().min(0).max(10).default(3),
-  WEBHOOK_RETRY_DELAY_MS: z.coerce.number().min(100).max(30_000).default(1000),
+  DB_PATH: z.string().default('./data/gateway.db'),
+  WEBHOOK_MAX_RETRIES: z.coerce.number().min(1).max(10).default(5),
+  WEBHOOK_BATCH_MESSAGES: z.coerce.number().min(1).max(1000).default(250),
+  WEBHOOK_BATCH_CONTACTS: z.coerce.number().min(1).max(2000).default(500),
+  WEBHOOK_BATCH_CHATS: z.coerce.number().min(1).max(1000).default(200),
 
   LOG_LEVEL: z
     .enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace'])

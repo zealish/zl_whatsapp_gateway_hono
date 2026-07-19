@@ -1,11 +1,13 @@
 import type { WebhookEvent } from '../schemas/webhook.js'
 
-export interface WebhookPayload {
-  event: WebhookEvent
-  sessionId: string
-  data: unknown
+export interface GatewayEventEnvelope {
+  eventId: string
+  instanceId: string
+  sequence: number
+  historySessionId?: string
+  event: string
   timestamp: number
-  signature?: string
+  payload: unknown
 }
 
 export interface WebhookConfig {
@@ -17,8 +19,23 @@ export interface WebhookConfig {
 
 export interface WebhookDelivery {
   id: string
+  instanceId: string
+  sequence: number
   webhookUrl: string
-  payload: WebhookPayload
+  payload: GatewayEventEnvelope
   attempts: number
   nextRetryAt: number
+  createdAt: number
+}
+
+export interface PendingDelivery {
+  id: string
+  instance_id: string
+  sequence: number
+  webhook_url: string
+  payload: string // JSON string
+  attempts: number
+  next_retry_at: number
+  created_at: number
+  status: string
 }

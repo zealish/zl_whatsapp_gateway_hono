@@ -1,0 +1,50 @@
+[
+  {
+    "slug": "authentication",
+    "title": "Authentication",
+    "content": "API Key Authentication All API endpoints (except health check) require authentication via an API key. Setting Up the API Key Generate a secure API key (minimum 16 characters): bash # Generate a random key openssl rand -base64 32 Add to your .env file: bash API_KEY=your-generated-key-here Using the API Key Include the API key in the X-API-Key header with every request: bash curl http://localhost:3000/session \\ -H &quot;X-API-Key: your-api-key-here&quot; Examples by Language cURL bash curl...",
+    "section": "Getting Started"
+  },
+  {
+    "slug": "getting-started",
+    "title": "Getting Started",
+    "content": "Prerequisites Before you begin, make sure you have: Node.js 18.14.1 or later npm , yarn , or pnpm package manager A WhatsApp account on your phone Step 1: Install the Gateway Choose your preferred package manager: bash # npm npm install whatsapp-gateway # yarn yarn add whatsapp-gateway # pnpm pnpm add whatsapp-gateway Or use Docker: bash docker pull whatsapp-gateway:latest Step 2: Configure Environment Create a .env file in your project root: bash cp .env.example .env Edit the .env file with...",
+    "section": "Getting Started"
+  },
+  {
+    "slug": "history-sync",
+    "title": "History Sync",
+    "content": "Overview When you pair a new device, WhatsApp automatically syncs your existing contacts, chats, and messages. This is called History Sync . How It Works mermaid sequenceDiagram participant You participant Gateway participant WhatsApp You-&gt;&gt;Gateway: Create &amp; connect session Gateway-&gt;&gt;WhatsApp: Pair device WhatsApp--&gt;&gt;Gateway: History sync started Note over Gateway: history.started event WhatsApp--&gt;&gt;Gateway: Contacts batch Note over Gateway: contacts.sync events...",
+    "section": "Guides"
+  },
+  {
+    "slug": "index",
+    "title": "Documentation",
+    "content": "What is WhatsApp Gateway? WhatsApp Gateway is a REST API gateway for WhatsApp Web, powered by Baileys and Hono . It provides a simple, reliable way to integrate WhatsApp messaging into your applications. Core Features Session Management - Create and manage multiple WhatsApp sessions with QR code or phone number pairing Rich Messaging - Send text, images, videos, documents, locations, contacts, polls, and more Webhook Events - Receive real-time events for messages, contacts, groups, and...",
+    "section": "Getting Started"
+  },
+  {
+    "slug": "installation",
+    "title": "Installation",
+    "content": "System Requirements Node.js 18.14.1+ (LTS recommended) Memory 512MB minimum, 1GB recommended Storage 100MB for application + space for session data npm Installation Global Install bash npm install -g whatsapp-gateway whatsapp-gateway Local Install bash # Create project directory mkdir my-whatsapp-gateway cd my-whatsapp-gateway # Initialize package npm init -y # Install npm install whatsapp-gateway # Create start script echo 'import { start } from &quot;whatsapp-gateway&quot;; start();' &gt;...",
+    "section": "Getting Started"
+  },
+  {
+    "slug": "messages",
+    "title": "Sending Messages",
+    "content": "Overview WhatsApp Gateway supports sending various message types through a single endpoint. The type field determines the message format. Send Message Endpoint code POST /session/{id}/send Message Types Type Description text Plain text message image Image with optional caption video Video clip audio Audio file or voice note sticker WebP sticker document File attachment location Location pin or live location contact Contact card (vCard) reaction Emoji reaction to a message poll Poll with...",
+    "section": "Guides"
+  },
+  {
+    "slug": "sessions",
+    "title": "Sessions",
+    "content": "Overview A session represents a connection to a WhatsApp account. Each session has its own authentication state and message history. Session Lifecycle mermaid stateDiagram-v2 [*] --&gt; Created: POST /session Created --&gt; Connecting: POST /session/{id}/connect Connecting --&gt; Open: QR scanned / Code entered Open --&gt; Close: Connection lost Close --&gt; Connecting: Reconnect Open --&gt; [*]: DELETE /session/{id} Close --&gt; [*]: DELETE /session/{id} Create a Session bash curl -X POST...",
+    "section": "Guides"
+  },
+  {
+    "slug": "webhooks",
+    "title": "Webhooks",
+    "content": "Overview Webhooks allow you to receive real-time notifications when events occur in your WhatsApp sessions. Instead of polling the API, you can register a URL and the Gateway will POST events to your server. Webhook Events Event Description messages.created New message received messages.updated Message status updated messages.deleted Message deleted messages.reaction Reaction added/removed contacts.updated Contact info updated contacts.sync Contact synced (history) groups.updated Group info...",
+    "section": "Guides"
+  }
+]

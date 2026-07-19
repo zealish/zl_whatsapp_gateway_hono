@@ -129,6 +129,8 @@ export class BaileysAdapter extends EventEmitter implements IBaileysAdapter {
 
     // ── Forward all WA events ──
     const eventsToForward = [
+      'messaging-history.set',
+      'messaging-history.status',
       'messages.upsert',
       'messages.update',
       'messages.delete',

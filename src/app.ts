@@ -14,11 +14,14 @@ import { createMessageRoutes } from './routes/message.js'
 import { createContactRoutes } from './routes/contact.js'
 import { createGroupRoutes } from './routes/group.js'
 import { createWebhookConfigRoutes } from './routes/webhook-config.js'
-import { createDocsRoutes } from './routes/docs.js'
+import { createDLQRoutes } from './routes/dlq.js'
+import { createApiDocsRoutes } from './routes/api-docs.js'
+import { createDocsRoutes } from './docs/routes.js'
 import health from './routes/health.js'
 import type { SessionManager } from './services/session-manager.js'
 import type { IWhatsAppService } from './types/whatsapp.js'
 import type { WebhookDispatcher } from './webhook/dispatcher.js'
+import type { QueueDB } from './webhook/queue-db.js'
 
 export function createApp(container: Container): Hono {
   const config = container.resolve<Config>(DI.Config)
@@ -26,36 +29,63 @@ export function createApp(container: Container): Hono {
   const sessionManager = container.resolve<SessionManager>(DI.SessionManager)
   const whatsappService = container.resolve<IWhatsAppService>(DI.WhatsAppService)
   const webhookDispatcher = container.resolve<WebhookDispatcher>(DI.WebhookDispatcher)
+  const queueDB = container.resolve<QueueDB>(DI.QueueDB)
 
   const app = new Hono()
+  const api = new Hono()
 
-  // ── Global middleware ──
+  // ── Global middleware (root level) ──
   app.use('*', secureHeaders())
   app.use('*', cors())
-  app.use('*', requestIdMiddleware())
-  app.use('*', pinoLogger({ pino: logger }))
+
+  // ── API-level middleware ──
+  api.use('*', requestIdMiddleware())
+  api.use('*', pinoLogger({ pino: logger }))
 
   // ── Public routes (no auth) ──
-  app.route('/health', health)
+  api.route('/health', health)
 
-  // ── Docs (public if enabled) ──
+  // ── API Reference - Swagger (public if enabled) ──
   if (config.DOCS_ENABLED) {
-    app.route('/docs', createDocsRoutes())
+    api.route('/reference', createApiDocsRoutes(config))
   }
 
   // ── Protected routes (API key required) ──
-  app.use('/session/*', apiKeyMiddleware(config.API_KEY))
+  api.use('/session/*', apiKeyMiddleware(config.API_KEY))
 
-  app.route('/session', createSessionRoutes(sessionManager, whatsappService))
-  app.route('/session', createMessageRoutes(whatsappService))
-  app.route('/session', createContactRoutes(whatsappService))
-  app.route('/session', createGroupRoutes(whatsappService))
-  app.route('/session', createWebhookConfigRoutes(webhookDispatcher))
+  api.route('/session', createSessionRoutes(sessionManager, whatsappService))
+  api.route('/session', createMessageRoutes(whatsappService))
+  api.route('/session', createContactRoutes(whatsappService))
+  api.route('/session', createGroupRoutes(whatsappService))
+  api.route('/session', createWebhookConfigRoutes(webhookDispatcher))
 
-  // ── Error handler (must be last) ──
-  app.onError(errorHandler)
+  // ── DLQ routes (protected) ──
+  api.use('/dlq/*', apiKeyMiddleware(config.API_KEY))
+  api.route('/dlq', createDLQRoutes(queueDB))
+
+  // ── Error handler ──
+  api.onError(errorHandler)
 
   // ── 404 fallback ──
+  api.notFound((c) => {
+    return c.json(
+      {
+        success: false,
+        error: { code: 'NOT_FOUND', message: `Route ${c.req.method} ${c.req.path} not found` },
+      },
+      404
+    )
+  })
+
+  // ── Documentation (public, outside BASE_URL) ──
+  if (config.DOCS_ENABLED) {
+    app.route('/', createDocsRoutes())
+  }
+
+  // ── Mount API under BASE_URL ──
+  app.route(config.BASE_URL, api)
+
+  // ── Root-level 404 for anything outside BASE_URL ──
   app.notFound((c) => {
     return c.json(
       {
@@ -66,6 +96,6 @@ export function createApp(container: Container): Hono {
     )
   })
 
-  logger.info('App initialized')
+  logger.info({ baseUrl: config.BASE_URL }, 'App initialized')
   return app
 }

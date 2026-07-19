@@ -6,7 +6,6 @@ webhooks
 .gitignore
 .env
 .env.*
-*.md
 .agents
 .codegraph
 opencode.json
@@ -14,3 +13,6 @@ skills-lock.json
 .vscode
 .idea
 .DS_Store
+
+# Exclude root-level markdown but NOT src/docs/content
+/*.md

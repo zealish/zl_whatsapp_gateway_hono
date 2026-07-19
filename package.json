@@ -4,7 +4,10 @@
   "type": "module",
   "scripts": {
     "dev": "tsx watch src/index.ts",
-    "build": "tsc",
+    "build": "tsc && pnpm build:css && pnpm build:content",
+    "build:css": "npx tailwindcss -i docs/css/input.css -o docs/css/output.css --minify",
+    "build:content": "cp -r src/docs/content dist/docs/content",
+    "dev:css": "npx tailwindcss -i docs/css/input.css -o docs/css/output.css --watch",
     "start": "node dist/index.js",
     "lint": "tsc --noEmit"
   },
@@ -13,18 +16,30 @@
     "@hono/swagger-ui": "^0.6.0",
     "@hono/zod-validator": "^0.5.0",
     "baileys": "7.0.0-rc13",
+    "better-sqlite3": "^12.11.1",
     "dotenv": "^16.4.7",
+    "fuse.js": "^7.5.0",
     "hono": "^4.12.30",
     "hono-pino": "^0.10.3",
+    "markdown-it": "^14.3.0",
     "pino": "^9.6.0",
     "pino-pretty": "^13.0.0",
     "qrcode": "^1.5.4",
+    "shiki": "^4.3.1",
+    "uuid": "^14.0.1",
     "zod": "^3.24.0"
   },
   "devDependencies": {
     "@hono/cli": "^0.1.10",
+    "@tailwindcss/typography": "~0.5.20",
+    "@types/better-sqlite3": "^7.6.13",
+    "@types/markdown-it": "^14.1.2",
     "@types/node": "^26.1.1",
     "@types/qrcode": "^1.5.5",
+    "@types/uuid": "^11.0.0",
+    "autoprefixer": "^10.5.4",
+    "postcss": "^8.5.19",
+    "tailwindcss": "^3.4.19",
     "tsx": "^4.23.0",
     "typescript": "^7.0.2"
   }

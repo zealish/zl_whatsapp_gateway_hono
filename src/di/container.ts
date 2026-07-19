@@ -35,6 +35,8 @@ export class Container {
 export const DI = {
   Config: 'config',
   Logger: 'logger',
+  QueueDB: 'queueDB',
+  WebhookQueue: 'webhookQueue',
   WebhookDispatcher: 'webhookDispatcher',
   SessionManager: 'sessionManager',
   WhatsAppService: 'whatsappService',
