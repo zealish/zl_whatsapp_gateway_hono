@@ -18,8 +18,11 @@ const configSchema = z.object({
   DB_PATH: z.string().default('./data/gateway.db'),
   WEBHOOK_MAX_RETRIES: z.coerce.number().min(1).max(10).default(5),
   WEBHOOK_BATCH_MESSAGES: z.coerce.number().min(1).max(1000).default(250),
-  WEBHOOK_BATCH_CONTACTS: z.coerce.number().min(1).max(2000).default(500),
   WEBHOOK_BATCH_CHATS: z.coerce.number().min(1).max(1000).default(200),
+
+  CONTACT_CACHE_SIZE: z.coerce.number().min(100).max(10000).default(1000),
+
+  PENDING_RESOLUTION_RETENTION_MS: z.coerce.number().min(60_000).max(86_400_000).default(86_400_000), // 24h default
 
   LOG_LEVEL: z
     .enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace'])

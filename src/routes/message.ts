@@ -7,8 +7,10 @@ import {
 } from '../schemas/message.js'
 import { successResponse } from '../lib/response.js'
 import { resolveMedia } from '../lib/media.js'
+import { convertToOggOpus } from '../lib/audio-convert.js'
 import { AppError } from '../lib/errors.js'
 import type { IWhatsAppService } from '../types/whatsapp.js'
+import { phoneToJid } from '../whatsapp/normalizers.js'
 
 /**
  * Message routes.
@@ -24,7 +26,8 @@ export function createMessageRoutes(whatsappService: IWhatsAppService): Hono {
     const sessionId = c.req.param('id')
     const body = c.req.valid('json')
     const content = await buildMessageContent(body, whatsappService, sessionId)
-    const result = await whatsappService.sendMessage(sessionId, body.to, content)
+    const options = buildSendOptions(body, whatsappService, sessionId)
+    const result = await whatsappService.sendMessage(sessionId, body.to, content, options)
     return c.json(successResponse(result), 201)
   })
 
@@ -63,13 +66,8 @@ async function buildMessageContent(
     case 'text': {
       const content: Record<string, unknown> = { text: body.text as string }
       if (Array.isArray(body.mentions) && body.mentions.length > 0) {
-        content.mentions = body.mentions as string[]
-      }
-      if (typeof body.quotedMessageId === 'string') {
-        // Quoting requires the full message object from the store.
-        // The route handler passes this through; the adapter's sendMessage
-        // supports the `quoted` option if provided.
-        // For now, we rely on the webhook event data containing message keys.
+        // Convert phone numbers to JIDs for mentions
+        content.mentions = (body.mentions as string[]).map((m) => phoneToJid(m))
       }
       return content
     }
@@ -80,6 +78,7 @@ async function buildMessageContent(
         image: media,
         caption: body.caption as string | undefined,
         mimetype: (body.mimetype as string) || 'image/jpeg',
+        viewOnce: !!body.viewOnce,
       }
     }
 
@@ -88,6 +87,7 @@ async function buildMessageContent(
       const content: Record<string, unknown> = {
         video: media,
         mimetype: (body.mimetype as string) || 'video/mp4',
+        viewOnce: !!body.viewOnce,
       }
       if (body.caption) content.caption = body.caption
       if (body.gifPlayback) content.gifPlayback = true
@@ -95,12 +95,27 @@ async function buildMessageContent(
     }
 
     case 'audio': {
-      const media = await resolveMedia({ url: body.url as string, base64: body.base64 as string })
-      return {
-        audio: media,
-        mimetype: (body.mimetype as string) || 'audio/mpeg',
-        ptt: !!body.ptt,
+      let media = await resolveMedia({ url: body.url as string, base64: body.base64 as string })
+      // For PTT, ensure audio is ogg/opus (WhatsApp requirement)
+      if (body.ptt) {
+        try {
+          media = await convertToOggOpus(media)
+        } catch (e) {
+          console.warn('[SEND-AUDIO] ogg conversion failed, sending as-is:', (e as Error).message)
+        }
       }
+      const content: Record<string, unknown> = {
+        audio: media,
+        mimetype: body.ptt ? 'audio/ogg; codecs=opus' : ((body.mimetype as string) || 'audio/mpeg'),
+        ptt: !!body.ptt,
+        viewOnce: !!body.viewOnce,
+      }
+      // Always pass seconds for PTT so Baileys doesn't try to compute it
+      if (typeof body.seconds === 'number' && body.seconds > 0) {
+        content.seconds = body.seconds
+      }
+      console.log('[SEND-AUDIO] ptt:', content.ptt, 'seconds:', content.seconds, 'mimetype:', content.mimetype, 'bufferLen:', media.length)
+      return content
     }
 
     case 'sticker': {
@@ -147,11 +162,13 @@ async function buildMessageContent(
     }
 
     case 'reaction': {
+      // Convert phone number to JID for the reaction target chat
+      const reactionJid = phoneToJid(body.to as string)
       return {
         react: {
           text: body.emoji as string,
           key: {
-            remoteJid: body.to as string,
+            remoteJid: reactionJid,
             id: body.messageId as string,
           },
         },
@@ -203,4 +220,28 @@ async function buildMessageContent(
     default:
       throw new AppError(`Unsupported message type: ${body.type}`, 400, 'INVALID_MESSAGE_TYPE')
   }
+}
+
+// ── Options builder: extracts send options like quoted message ──
+
+function buildSendOptions(
+  body: Record<string, unknown>,
+  whatsappService?: IWhatsAppService,
+  sessionId?: string
+): { quoted?: object } | undefined {
+  if (typeof body.quotedMessageId !== 'string' || !whatsappService || !sessionId) {
+    return undefined
+  }
+
+  // Look up the quoted message from the store using the recipient (to) as the chat JID
+  const quoted = whatsappService.getMessage(sessionId, body.to as string, body.quotedMessageId)
+  if (!quoted) {
+    throw new AppError(
+      'Quoted message not found in store. Only recently received/sent messages can be quoted.',
+      404,
+      'MESSAGE_NOT_FOUND'
+    )
+  }
+
+  return { quoted }
 }

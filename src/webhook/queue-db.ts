@@ -217,6 +217,17 @@ export class QueueDB {
     return row.seq
   }
 
+  /**
+   * Get and increment the sequence number for an instance+pipeline.
+   * Independent counters: history and realtime never share sequence space.
+   * Atomic: uses INSERT ... ON CONFLICT + UPDATE in a single statement.
+   */
+  nextSequenceForPipeline(instanceId: string, pipeline: 'history' | 'realtime'): number {
+    const key = `${instanceId}:${pipeline}`
+    const row = this.insertSequence.get(key) as { seq: number }
+    return row.seq
+  }
+
   currentSequence(instanceId: string): number {
     const row = this.selectSequence.get(instanceId) as { seq: number } | undefined
     return row?.seq ?? 0

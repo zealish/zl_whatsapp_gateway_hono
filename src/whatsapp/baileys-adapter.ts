@@ -3,6 +3,7 @@ import makeWASocket, {
   DisconnectReason,
   Browsers,
   makeCacheableSignalKeyStore,
+  downloadMediaMessage,
 } from 'baileys'
 import type {
   WASocket,
@@ -84,6 +85,11 @@ export class BaileysAdapter extends EventEmitter implements IBaileysAdapter {
       for (const msg of messages) {
         if (msg.key.remoteJid) {
           this.messageStore.set(msg.key.remoteJid, msg)
+          // Also store under remoteJidAlt (phone JID) when present, so lookups
+          // via phone number work even if remoteJid is a LID
+          if (msg.key.remoteJidAlt) {
+            this.messageStore.set(msg.key.remoteJidAlt, msg)
+          }
         }
       }
     })
@@ -145,6 +151,7 @@ export class BaileysAdapter extends EventEmitter implements IBaileysAdapter {
       'blocklist.update',
       'call',
       'creds.update',
+      'lid-mapping.update',
     ] as const
 
     for (const event of eventsToForward) {
@@ -169,13 +176,32 @@ export class BaileysAdapter extends EventEmitter implements IBaileysAdapter {
     this.logger.info('Disconnected')
   }
 
-  async sendMessage(jid: string, content: object): Promise<SendMessageResult> {
+  async sendMessage(jid: string, content: object, options?: { quoted?: object }): Promise<SendMessageResult> {
     this.assertConnected()
     this.socket!.sendPresenceUpdate('composing', jid).catch(() => {})
+    // Log content for debugging PTT audio messages
+    const contentAny = content as any
+    if (contentAny?.audio || contentAny?.ptt) {
+      console.log('[ADAPTER-SEND] content keys:', Object.keys(contentAny), 'ptt:', contentAny.ptt, 'seconds:', contentAny.seconds, 'mimetype:', contentAny.mimetype, 'audio type:', typeof contentAny.audio, 'audio isBuffer:', Buffer.isBuffer(contentAny.audio))
+    }
     try {
-      const msg = await this.socket!.sendMessage(jid, content as any)
+      const msg = await this.socket!.sendMessage(jid, content as any, options as any)
       if (!msg) {
         throw new AppError('Failed to send message', 500, 'SEND_FAILED')
+      }
+      // Log sent message proto for PTT debugging
+      if (msg.message?.audioMessage) {
+        const am = msg.message.audioMessage
+        console.log('[ADAPTER-SENT] audioMessage ptt:', am.ptt, 'seconds:', am.seconds, 'mimetype:', am.mimetype, 'fileLength:', am.fileLength?.toString?.())
+      }
+      // Store sent message so it can be quoted/forwarded later
+      if (msg.key.remoteJid) {
+        this.messageStore.set(msg.key.remoteJid, msg)
+        // Also store under remoteJidAlt (phone JID) when present, so lookups
+        // via phone number work even if remoteJid is a LID
+        if (msg.key.remoteJidAlt) {
+          this.messageStore.set(msg.key.remoteJidAlt, msg)
+        }
       }
       return {
         id: msg.key.id ?? '',
@@ -315,7 +341,60 @@ export class BaileysAdapter extends EventEmitter implements IBaileysAdapter {
   }
 
   getMessage(jid: string, msgId: string): object | undefined {
-    return this.messageStore.get(jid, msgId) ?? undefined
+    return this.messageStore.get(jid, msgId)
+      ?? this.messageStore.getByMessageId(msgId)?.message
+      ?? undefined
+  }
+
+  async downloadMedia(jid: string, msgId: string): Promise<Buffer> {
+    this.assertConnected()
+    const msg = this.messageStore.get(jid, msgId)
+    if (!msg) {
+      throw new AppError('Message not found in store', 404, 'NOT_FOUND')
+    }
+    try {
+      return await downloadMediaMessage(msg, 'buffer', {}, {
+        reuploadRequest: (m) => this.socket!.updateMediaMessage(m),
+        logger: this.logger as any,
+      })
+    } catch (err: any) {
+      const statusCode = err?.statusCode ?? err?.output?.statusCode ?? 500
+      if (statusCode === 400) {
+        throw new AppError('Message is not a media message', 400, 'VALIDATION_ERROR')
+      }
+      throw new AppError(`Failed to download media: ${err?.message ?? 'unknown error'}`, 500, 'INTERNAL_ERROR')
+    }
+  }
+
+  async downloadMediaByMessageId(msgId: string): Promise<{ buffer: Buffer; mimetype?: string; fileName?: string }> {
+    this.assertConnected()
+    const found = this.messageStore.getByMessageId(msgId)
+    if (!found) {
+      throw new AppError('Message not found in store', 404, 'NOT_FOUND')
+    }
+    const { message: msg } = found
+
+    try {
+      const buffer = await downloadMediaMessage(msg, 'buffer', {}, {
+        reuploadRequest: (m) => this.socket!.updateMediaMessage(m),
+        logger: this.logger as any,
+      })
+
+      // Extract mimetype and fileName from the raw message proto
+      const inner = msg.message
+      const type = inner ? Object.keys(inner)[0] : undefined
+      const media = type ? (inner as any)?.[type] : undefined
+      const mimetype: string | undefined = media?.mimetype ?? undefined
+      const fileName: string | undefined = media?.fileName ?? media?.title ?? undefined
+
+      return { buffer, mimetype, fileName }
+    } catch (err: any) {
+      const statusCode = err?.statusCode ?? err?.output?.statusCode ?? 500
+      if (statusCode === 400) {
+        throw new AppError('Message is not a media message', 400, 'VALIDATION_ERROR')
+      }
+      throw new AppError(`Failed to download media: ${err?.message ?? 'unknown error'}`, 500, 'INTERNAL_ERROR')
+    }
   }
 
   getConnectionState(): ConnectionState {
@@ -324,6 +403,37 @@ export class BaileysAdapter extends EventEmitter implements IBaileysAdapter {
 
   getQr(): string | null {
     return this.qr
+  }
+
+  /**
+   * Resolve a @lid JID to a phone number.
+   * Uses sock.onWhatsApp() as fallback — Baileys internally resolves LID→PN.
+   *
+   * @param lid - The @lid JID (e.g. "121131029766161@lid")
+   * @returns Phone number string (e.g. "6281234567890") or null if unresolvable
+   */
+  async resolveLidToPhone(lid: string): Promise<string | null> {
+    this.assertSocketReady()
+
+    try {
+      // onWhatsApp expects phone numbers, but Baileys 7.x also handles @lid internally
+      // It returns [{ exists: boolean, jid: string }] where jid is the resolved PN JID
+      const results = await this.socket!.onWhatsApp(lid)
+      if (results && results.length > 0 && results[0].exists) {
+        const resolvedJid = results[0].jid
+        // Extract phone number from the resolved JID
+        const atIndex = resolvedJid.indexOf('@')
+        if (atIndex > 0) {
+          const localPart = resolvedJid.substring(0, atIndex)
+          const colonIndex = localPart.indexOf(':')
+          return colonIndex > 0 ? localPart.substring(0, colonIndex) : localPart
+        }
+      }
+    } catch (err) {
+      this.logger.debug({ err, lid }, 'Failed to resolve LID via onWhatsApp')
+    }
+
+    return null
   }
 
   /** Map Baileys GroupMetadata to our GroupInfo interface */

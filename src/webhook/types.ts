@@ -5,6 +5,7 @@ export interface GatewayEventEnvelope {
   instanceId: string
   sequence: number
   historySessionId?: string
+  historySync?: boolean
   event: string
   timestamp: number
   payload: unknown

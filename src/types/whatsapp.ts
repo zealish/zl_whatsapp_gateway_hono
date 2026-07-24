@@ -22,6 +22,7 @@ export interface SendMessageResult {
 // ── Contacts ──
 
 export interface ContactInfo {
+  /** Bare phone number for personal contacts (e.g. '6281234567890'), @g.us JID for groups */
   jid: string
   name?: string
   pushName?: string
@@ -31,9 +32,11 @@ export interface ContactInfo {
 // ── Groups ──
 
 export interface GroupInfo {
+  /** Group JID in @g.us format (e.g. '120363012345678901@g.us') */
   jid: string
   subject: string
   description?: string
+  /** Bare phone number of group owner (e.g. '6281234567890') */
   owner?: string
   participantCount: number
   creation?: number
@@ -43,6 +46,7 @@ export interface GroupInfo {
 }
 
 export interface GroupParticipant {
+  /** Bare phone number for personal participants (e.g. '6281234567890'), @g.us for groups */
   jid: string
   admin: 'admin' | 'superadmin' | null
 }
@@ -53,11 +57,13 @@ export interface GroupParticipant {
 export interface IBaileysAdapter {
   connect(): Promise<void>
   disconnect(): Promise<void>
-  sendMessage(jid: string, content: object): Promise<SendMessageResult>
+  sendMessage(jid: string, content: object, options?: { quoted?: object }): Promise<SendMessageResult>
   getContact(jid: string): Promise<ContactInfo | null>
   getGroupMetadata(jid: string): Promise<GroupInfo | null>
   getPushName(): string | undefined
   getMessage(jid: string, msgId: string): object | undefined
+  downloadMedia(jid: string, msgId: string): Promise<Buffer>
+  downloadMediaByMessageId(msgId: string): Promise<{ buffer: Buffer; mimetype?: string; fileName?: string }>
   getConnectionState(): ConnectionState
   getQr(): string | null
 
@@ -82,6 +88,12 @@ export interface IBaileysAdapter {
 
   on(event: string, handler: (...args: unknown[]) => void): void
   off(event: string, handler: (...args: unknown[]) => void): void
+
+  /**
+   * Resolve a @lid JID to a phone number using Baileys's internal state.
+   * Returns the phone number string or null if unresolvable.
+   */
+  resolveLidToPhone(lid: string): Promise<string | null>
 }
 
 // ── WhatsApp Service Interface ──
@@ -94,11 +106,14 @@ export interface IWhatsAppService {
   sendMessage(
     sessionId: string,
     jid: string,
-    content: object
+    content: object,
+    options?: { quoted?: object }
   ): Promise<SendMessageResult>
   getContact(sessionId: string, jid: string): Promise<ContactInfo | null>
   getGroup(sessionId: string, jid: string): Promise<GroupInfo | null>
   getMessage(sessionId: string, jid: string, msgId: string): object | undefined
+  downloadMedia(sessionId: string, jid: string, msgId: string): Promise<Buffer>
+  downloadMediaByMessageId(sessionId: string, msgId: string): Promise<{ buffer: Buffer; mimetype?: string; fileName?: string }>
 
   // Group operations
   createGroup(sessionId: string, subject: string, participants: string[]): Promise<GroupInfo>

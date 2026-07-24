@@ -15,6 +15,7 @@ import { createContactRoutes } from './routes/contact.js'
 import { createGroupRoutes } from './routes/group.js'
 import { createWebhookConfigRoutes } from './routes/webhook-config.js'
 import { createDLQRoutes } from './routes/dlq.js'
+import { createMediaRoutes } from './routes/media.js'
 import { createApiDocsRoutes } from './routes/api-docs.js'
 import { createDocsRoutes } from './docs/routes.js'
 import health from './routes/health.js'
@@ -55,6 +56,7 @@ export function createApp(container: Container): Hono {
 
   api.route('/session', createSessionRoutes(sessionManager, whatsappService))
   api.route('/session', createMessageRoutes(whatsappService))
+  api.route('/session', createMediaRoutes(whatsappService))
   api.route('/session', createContactRoutes(whatsappService))
   api.route('/session', createGroupRoutes(whatsappService))
   api.route('/session', createWebhookConfigRoutes(webhookDispatcher))

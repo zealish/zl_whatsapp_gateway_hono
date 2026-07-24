@@ -1,9 +1,9 @@
 import { z } from 'zod'
-import { jidSchema } from './common.js'
+import { phoneNumberSchema } from './common.js'
 
 export const createGroupSchema = z.object({
   subject: z.string().min(1).max(256).describe('Group name'),
-  participants: z.array(jidSchema).min(1).max(1024).describe('Participant JIDs to add'),
+  participants: z.array(phoneNumberSchema).min(1).max(1024).describe('Participant phone numbers (e.g. ["6281234567890"])'),
 })
 
 export const updateGroupSubjectSchema = z.object({
@@ -15,7 +15,7 @@ export const updateGroupDescriptionSchema = z.object({
 })
 
 export const groupParticipantsSchema = z.object({
-  participants: z.array(jidSchema).min(1).max(128).describe('Participant JIDs'),
+  participants: z.array(phoneNumberSchema).min(1).max(128).describe('Participant phone numbers (e.g. ["6281234567890"])'),
 })
 
 export const updateGroupSettingsSchema = z.object({

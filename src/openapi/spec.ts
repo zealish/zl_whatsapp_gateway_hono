@@ -477,11 +477,11 @@ export function createOpenApiSpec(config: OpenApiSpecOptions) {
             description:
               'Subscribed events (all if empty). Canonical names preferred. Legacy names supported for backward compatibility.\n\n' +
               '**Canonical events:** messages.created, messages.updated, messages.deleted, messages.reaction, ' +
-              'contacts.updated, contacts.sync, groups.updated, group-participants.updated, receipts.updated, ' +
+              'groups.updated, group-participants.updated, receipts.updated, ' +
               'connection.update, blocklist.set, blocklist.updated, call, ' +
               'chats.sync, messages.sync, history.progress, history.finished\n\n' +
               '**Legacy (deprecated):** messages.upsert, messages.update, messages.delete, ' +
-              'contacts.upsert, contacts.update, groups.upsert, groups.update, ' +
+              'groups.upsert, groups.update, ' +
               'group-participants.update, message-receipt.update, blocklist.update, creds.update',
             example: ['messages.created', 'history.finished', 'connection.update'],
           },
@@ -497,7 +497,7 @@ export function createOpenApiSpec(config: OpenApiSpecOptions) {
           events: {
             type: 'array',
             items: { type: 'string' },
-            example: ['messages.created', 'contacts.sync', 'history.finished', 'connection.update'],
+            example: ['messages.created', 'history.finished', 'connection.update'],
             description: 'Events to subscribe to. Use canonical names (recommended) or legacy names.',
           },
         },
@@ -883,6 +883,38 @@ export function createOpenApiSpec(config: OpenApiSpecOptions) {
         responses: {
           200: { description: 'Message deleted', content: { 'application/json': { schema: { type: 'object', properties: { success: { type: 'boolean' }, data: { $ref: '#/components/schemas/SendMessageResult' } } } } } },
           400: { description: 'Validation error', content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } } },
+        },
+      },
+    },
+    '/session/{id}/messages/{messageId}/media': {
+      get: {
+        tags: ['Message'],
+        summary: 'Download media from a received message',
+        description:
+          'Returns the raw media binary (image, video, audio, document, sticker) for a given message ID. ' +
+          'The message must exist in the in-memory store (last 500 messages per chat). ' +
+          'Use this endpoint to download media referenced in webhook payloads.',
+        parameters: [
+          { name: 'id', in: 'path', required: true, schema: { type: 'string' }, description: 'Session ID' },
+          { name: 'messageId', in: 'path', required: true, schema: { type: 'string' }, description: 'Message ID from webhook payload (key.id)' },
+        ],
+        responses: {
+          200: {
+            description: 'Media binary',
+            content: {
+              'image/jpeg': { schema: { type: 'string', format: 'binary' } },
+              'image/png': { schema: { type: 'string', format: 'binary' } },
+              'video/mp4': { schema: { type: 'string', format: 'binary' } },
+              'audio/ogg': { schema: { type: 'string', format: 'binary' } },
+              'audio/mpeg': { schema: { type: 'string', format: 'binary' } },
+              'application/pdf': { schema: { type: 'string', format: 'binary' } },
+              'image/webp': { schema: { type: 'string', format: 'binary' } },
+              'application/octet-stream': { schema: { type: 'string', format: 'binary' } },
+            },
+          },
+          400: { description: 'Message is not a media type', content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } } },
+          404: { description: 'Message not found in store', content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } } },
+          503: { description: 'Session not connected', content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } } },
         },
       },
     },

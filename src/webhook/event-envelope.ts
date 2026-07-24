@@ -10,13 +10,15 @@ export function createEnvelope(
   event: string,
   payload: unknown,
   sequence: number,
-  historySessionId?: string
+  historySessionId?: string,
+  historySync?: boolean
 ): GatewayEventEnvelope {
   return {
     eventId: uuidv7(),
     instanceId,
     sequence,
     historySessionId,
+    historySync,
     event,
     timestamp: Date.now(),
     payload,

@@ -9,7 +9,6 @@ const EVENT_ALIASES: Record<string, string> = {
   'messages.created': 'messages.upsert',
   'messages.updated': 'messages.update',
   'messages.deleted': 'messages.delete',
-  'contacts.updated': 'contacts.upsert',
   'groups.updated': 'groups.upsert',
   'group-participants.updated': 'group-participants.update',
   'receipts.updated': 'message-receipt.update',

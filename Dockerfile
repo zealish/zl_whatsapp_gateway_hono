@@ -30,6 +30,7 @@ RUN pnpm install --prod --frozen-lockfile
 FROM node:24-alpine
 
 RUN corepack enable && corepack prepare pnpm@10.17.1 --activate
+RUN apk add --no-cache ffmpeg
 
 WORKDIR /app
 

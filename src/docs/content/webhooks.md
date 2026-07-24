@@ -15,8 +15,6 @@ Webhooks allow you to receive real-time notifications when events occur in your 
 | `messages.updated` | Message status updated |
 | `messages.deleted` | Message deleted |
 | `messages.reaction` | Reaction added/removed |
-| `contacts.updated` | Contact info updated |
-| `contacts.sync` | Contact synced (history) |
 | `groups.updated` | Group info updated |
 | `group-participants.updated` | Group members changed |
 | `connection.update` | Connection state changed |

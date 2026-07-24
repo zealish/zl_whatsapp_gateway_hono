@@ -2,137 +2,216 @@ import type pino from 'pino'
 import type { Chat, Contact } from 'baileys'
 import type { WAMessage } from 'baileys'
 import type { WebhookDispatcher } from '../webhook/dispatcher.js'
+import type { ContactResolver } from './contact-resolver.js'
+import type { LidMappingStore } from './lid-mapping.js'
 import {
   normalizeChat,
-  normalizeContact,
   normalizeMessage,
+  extractPhoneFromJid,
 } from './normalizers.js'
 
-export type SyncState = 'idle' | 'syncing' | 'finished'
+/**
+ * Informational phase of history sync.
+ * Never affects dispatch logic — purely for observability.
+ */
+export type SyncPhase = 'idle' | 'history' | 'completed'
 
 export interface BatchConfig {
   messages: number
-  contacts: number
   chats: number
-}
-
-interface BufferedEvent {
-  event: string
-  args: unknown[]
 }
 
 /**
  * Manages the initial history synchronization lifecycle per instance.
  *
- * States:
- *   idle → syncing → finished
+ * History events are dispatched directly to WebhookQueue as a background
+ * pipeline — they NEVER block realtime events.
  *
- * During 'syncing':
- *   - Incoming Baileys history events are normalized and batched.
- *   - Realtime events are buffered (not delivered).
- *   - On isLatest=true or all sync types complete, buffer is drained.
+ * Phases:
+ *   idle → history → completed
  *
- * After 'finished':
- *   - All events pass through immediately.
+ * This state is informational only. Realtime events are processed
+ * independently by MessageHandler without any coordination.
  */
 export class HistorySyncHandler {
-  private state: SyncState = 'idle'
+  private phase: SyncPhase = 'idle'
   private historySessionId: string | null = null
-  private realtimeBuffer: BufferedEvent[] = []
   private progress: number = 0
   private instanceId: string
   private dispatcher: WebhookDispatcher
   private batchConfig: BatchConfig
+  private contactResolver: ContactResolver
+  private lidMapping: LidMappingStore | null
+  private onSyncComplete?: () => void
+  private syncNotified = false
+  private syncTimeout: ReturnType<typeof setTimeout> | null = null
   private logger: pino.Logger
 
   constructor(
     instanceId: string,
     dispatcher: WebhookDispatcher,
     batchConfig: BatchConfig,
-    logger: pino.Logger
+    contactResolver: ContactResolver,
+    logger: pino.Logger,
+    lidMapping?: LidMappingStore | null,
+    onSyncComplete?: () => void
   ) {
     this.instanceId = instanceId
     this.dispatcher = dispatcher
     this.batchConfig = batchConfig
+    this.contactResolver = contactResolver
+    this.lidMapping = lidMapping ?? null
+    this.onSyncComplete = onSyncComplete
     this.logger = logger.child({ module: 'HistorySyncHandler', instanceId })
   }
 
   /**
-   * Called when connection opens. Begins the sync state machine.
+   * Called when connection opens. Begins the history sync phase.
+   * Sets a safety timeout — if no history.set arrives within 60s,
+   * mark session as synced anyway (no history to sync).
    */
   startSync(): void {
-    if (this.state === 'finished') {
+    if (this.phase === 'completed') {
       // Reconnection: reset state
       this.reset()
     }
-    this.state = 'syncing'
+    this.phase = 'history'
     this.historySessionId = crypto.randomUUID()
     this.progress = 0
-    this.realtimeBuffer = []
     this.logger.info(
       { historySessionId: this.historySessionId },
-      'History sync started'
+      '[History] Sync started'
     )
+
+    // Safety timeout: if messaging-history.set never fires, mark synced after 60s
+    this.syncTimeout = setTimeout(() => {
+      if (!this.syncNotified) {
+        this.logger.warn('[History] Sync timeout — no history.set received, marking synced')
+        this.notifySyncComplete()
+      }
+    }, 60_000)
   }
 
   /**
    * Handle a Baileys messaging-history.set event.
    * Normalizes chats, contacts, messages and dispatches in batches.
+   * All dispatches go directly to WebhookQueue — no buffering.
    */
   handleHistorySet(data: {
     chats: Chat[]
     contacts: Contact[]
     messages: WAMessage[]
+    lidPnMappings?: Array<{ pn: string; lid: string }>
     isLatest?: boolean
     progress?: number | null
     syncType?: unknown
     chunkOrder?: number | null
     peerDataRequestSessionId?: string | null
   }): void {
-    if (this.state !== 'syncing') {
+    if (this.phase !== 'history') {
       this.logger.warn(
-        { state: this.state },
-        'Received history.set while not in syncing state, starting sync'
+        { phase: this.phase },
+        'Received history.set while not in history phase, starting sync'
       )
       this.startSync()
     }
 
     const { chats, contacts, messages, isLatest, progress } = data
+    const lidPnMappings = data.lidPnMappings
+
+    // Process LID → PN mappings from history sync (highest priority source)
+    if (lidPnMappings && lidPnMappings.length > 0 && this.lidMapping) {
+      for (const mapping of lidPnMappings) {
+        if (mapping.lid && mapping.pn) {
+          this.lidMapping.addMapping(mapping.lid, mapping.pn)
+        }
+      }
+      this.logger.debug(
+        { count: lidPnMappings.length },
+        '[History] Processed %d LID→PN mappings',
+        lidPnMappings.length
+      )
+    }
 
     // Normalize and dispatch chats in batches
     if (chats?.length > 0) {
-      const normalized = chats.map(normalizeChat)
-      this.dispatchBatched('chats.sync', normalized, this.batchConfig.chats)
-      this.logger.debug({ count: chats.length }, 'Processed history chats')
+      const normalized: unknown[] = []
+      for (const c of chats) {
+        try {
+          normalized.push(normalizeChat(c, this.lidMapping))
+        } catch (err) {
+          this.logger.warn({ err, chatId: c.id }, '[History] Failed to normalize chat, skipping')
+        }
+      }
+      if (normalized.length > 0) {
+        this.dispatchBatched('chats.sync', normalized, this.batchConfig.chats)
+      }
+      this.logger.debug({ count: chats.length }, '[History] Enqueued %d chats', chats.length)
     }
 
-    // Normalize and dispatch contacts in batches
+    // Sync contacts to local store AND feed LID mapping (no webhook dispatch)
     if (contacts?.length > 0) {
-      const normalized = contacts.map(normalizeContact)
-      this.dispatchBatched('contacts.sync', normalized, this.batchConfig.contacts)
-      this.logger.debug({ count: contacts.length }, 'Processed history contacts')
+      for (const c of contacts) {
+        try {
+          const phone = extractPhoneFromJid(c.id ?? '')
+          if (!phone) continue
+
+          // Feed LID ↔ Phone mapping if contact has lid field
+          if (this.lidMapping && c.lid && c.id?.endsWith('@s.whatsapp.net')) {
+            this.lidMapping.addMapping(c.lid, phone)
+          }
+
+          this.contactResolver.syncContact({
+            phone,
+            name: c.name || undefined,
+            notify: c.notify || undefined,
+            verifiedName: c.verifiedName || undefined,
+          })
+        } catch (err) {
+          this.logger.warn({ err, contactId: c.id }, '[History] Failed to sync contact, skipping')
+        }
+      }
+      this.logger.debug({ count: contacts.length }, '[History] Synced %d contacts to store', contacts.length)
+
+      // Fast path: contacts synced, LID mappings now available
+      this.notifySyncComplete()
     }
 
     // Normalize and dispatch messages in batches
     if (messages?.length > 0) {
-      const normalized = messages.map(normalizeMessage)
-      this.dispatchBatched('messages.sync', normalized, this.batchConfig.messages)
-      this.logger.debug({ count: messages.length }, 'Processed history messages')
+      const normalized: unknown[] = []
+      for (const m of messages) {
+        try {
+          normalized.push(normalizeMessage(m, this.lidMapping))
+        } catch (err) {
+          this.logger.warn({ err, key: m.key }, '[History] Failed to normalize message, skipping')
+        }
+      }
+      if (normalized.length > 0) {
+        this.dispatchBatched('messages.sync', normalized, this.batchConfig.messages)
+      }
+      this.logger.debug({ count: messages.length }, '[History] Enqueued %d messages', messages.length)
     }
 
     // Update and emit progress
     if (progress != null && progress !== this.progress) {
       this.progress = progress
       this.dispatcher
-        .dispatch(this.instanceId, 'history.progress', { progress }, this.historySessionId!)
+        .dispatch(this.instanceId, 'history.progress', { progress }, {
+          historySessionId: this.historySessionId!,
+          historySync: true,
+        })
         .catch((err) => this.logger.error({ err }, 'Failed to dispatch history.progress'))
-      this.logger.info({ progress }, 'History sync progress')
+      this.logger.info({ progress }, 'History Progress: %d%%', progress)
     }
 
     // Check if sync is complete
     if (isLatest === true) {
       this.completeSync()
     }
+
+    // Guaranteed fallback: ensure session is marked as synced even if no contacts were in this batch
+    this.notifySyncComplete()
   }
 
   /**
@@ -146,34 +225,15 @@ export class HistorySyncHandler {
   }): void {
     this.logger.info(
       { syncType: data.syncType, status: data.status, explicit: data.explicit },
-      'History sync status update'
+      '[History] Sync status update'
     )
-
-    // If status is complete and explicit (server confirmed), we could optionally
-    // transition to finished even without isLatest. For now, we rely on isLatest.
   }
 
   /**
-   * Buffer a realtime event if sync is in progress.
-   * Returns true if the event was buffered, false if it should be processed immediately.
+   * Get the current sync phase (informational only).
    */
-  bufferRealtimeEvent(event: string, args: unknown[]): boolean {
-    if (this.state !== 'syncing') {
-      return false
-    }
-    this.realtimeBuffer.push({ event, args })
-    this.logger.debug(
-      { event, bufferSize: this.realtimeBuffer.length },
-      'Buffered realtime event during history sync'
-    )
-    return true
-  }
-
-  /**
-   * Get the current sync state.
-   */
-  getState(): SyncState {
-    return this.state
+  getSyncPhase(): SyncPhase {
+    return this.phase
   }
 
   /**
@@ -185,6 +245,7 @@ export class HistorySyncHandler {
 
   /**
    * Dispatch items in batches of the given size.
+   * All items go directly to WebhookQueue with historySync: true.
    */
   private dispatchBatched(
     event: string,
@@ -198,60 +259,64 @@ export class HistorySyncHandler {
           this.instanceId,
           event,
           batch,
-          this.historySessionId!
+          { historySessionId: this.historySessionId!, historySync: true }
         )
         .catch((err) =>
-          this.logger.error({ err, event, batchStart: i }, 'Failed to dispatch batch')
+          this.logger.error({ err, event, batchStart: i }, 'Failed to dispatch history batch')
         )
     }
   }
 
   /**
-   * Complete the sync: emit history.finished, then drain the buffer.
+   * Complete the sync: emit history.finished and transition phase.
+   * No buffer drain — realtime events were never blocked.
    */
   private completeSync(): void {
-    this.logger.info(
-      { bufferSize: this.realtimeBuffer.length },
-      'History sync completing'
-    )
-
     this.dispatcher
       .dispatch(
         this.instanceId,
         'history.finished',
         {},
-        this.historySessionId!
+        { historySessionId: this.historySessionId!, historySync: true }
       )
       .catch((err) => this.logger.error({ err }, 'Failed to dispatch history.finished'))
 
-    this.logger.info('History sync completed')
+    this.phase = 'completed'
+    this.logger.info('[History] Finished')
 
-    // Transition to finished before draining buffer
-    // so buffered events are processed as normal realtime events
-    this.state = 'finished'
-
-    // Store buffer reference and clear before draining
-    // (draining may trigger new events)
-    const buffer = [...this.realtimeBuffer]
-    this.realtimeBuffer = []
-
-    // Notify that buffer should be drained
-    // The caller (MessageHandler) will process these events
-    this.drainCallback?.(buffer)
+    // Ultimate fallback: ensure session is marked as synced
+    this.notifySyncComplete()
   }
-
-  /**
-   * Callback set by MessageHandler to receive buffered events on completion.
-   */
-  drainCallback: ((events: BufferedEvent[]) => void) | null = null
 
   /**
    * Reset handler state for reconnection.
    */
   private reset(): void {
-    this.state = 'idle'
+    this.phase = 'idle'
     this.historySessionId = null
-    this.realtimeBuffer = []
     this.progress = 0
+    this.syncNotified = false
+    if (this.syncTimeout) {
+      clearTimeout(this.syncTimeout)
+      this.syncTimeout = null
+    }
+  }
+
+  /**
+   * Fire onSyncComplete callback once. Idempotent — safe to call multiple times.
+   * Called from:
+   * - After contacts synced (fast path, mappings available immediately)
+   * - End of every handleHistorySet (guaranteed fallback)
+   * - completeSync() (ultimate fallback)
+   */
+  private notifySyncComplete(): void {
+    if (this.syncNotified || !this.onSyncComplete) return
+    this.syncNotified = true
+    if (this.syncTimeout) {
+      clearTimeout(this.syncTimeout)
+      this.syncTimeout = null
+    }
+    this.onSyncComplete()
+    this.logger.info('[History] Sync complete — dispatcher notified')
   }
 }

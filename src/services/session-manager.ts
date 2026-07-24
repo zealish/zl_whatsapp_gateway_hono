@@ -5,6 +5,8 @@ import { join } from 'node:path'
 import type pino from 'pino'
 import type { SessionInfo, IWhatsAppService } from '../types/whatsapp.js'
 import type { WebhookDispatcher } from '../webhook/dispatcher.js'
+import type { ContactResolver } from '../whatsapp/contact-resolver.js'
+import type { LidMappingStore } from '../whatsapp/lid-mapping.js'
 import { ConnectionManager } from '../whatsapp/connection-manager.js'
 import { MessageHandler } from '../whatsapp/message-handler.js'
 import type { BatchConfig } from '../whatsapp/history-sync-handler.js'
@@ -23,21 +25,26 @@ export class SessionManager {
   private sessions = new Map<string, Session>()
   private sessionsDir: string
   private webhookDispatcher: WebhookDispatcher
+  private contactResolver: ContactResolver
+  private lidMapping: LidMappingStore | null
   private batchConfig: BatchConfig
   private logger: pino.Logger
 
   constructor(
     sessionsDir: string,
     webhookDispatcher: WebhookDispatcher,
+    contactResolver: ContactResolver,
     logger: pino.Logger,
-    batchConfig?: BatchConfig
+    batchConfig?: BatchConfig,
+    lidMapping?: LidMappingStore | null
   ) {
     this.sessionsDir = sessionsDir
     this.webhookDispatcher = webhookDispatcher
+    this.contactResolver = contactResolver
+    this.lidMapping = lidMapping ?? null
     this.logger = logger.child({ module: 'SessionManager' })
     this.batchConfig = batchConfig ?? {
       messages: 250,
-      contacts: 500,
       chats: 200,
     }
   }
@@ -111,6 +118,12 @@ export class SessionManager {
 
     const info = await session.connectionManager.connect()
 
+    // Register LID resolver (Baileys adapter) for this session
+    this.webhookDispatcher.registerLidResolver(
+      sessionId,
+      (lid: string) => session.connectionManager.adapter.resolveLidToPhone(lid)
+    )
+
     // Attach message handler after connect
     session.messageHandler.attach()
 
@@ -120,6 +133,7 @@ export class SessionManager {
   async disconnectSession(sessionId: string): Promise<void> {
     const session = this.getSessionOrThrow(sessionId)
     session.messageHandler.detach()
+    this.webhookDispatcher.unregisterLidResolver(sessionId)
     await session.connectionManager.disconnect()
   }
 
@@ -130,6 +144,7 @@ export class SessionManager {
     }
 
     session.messageHandler.detach()
+    this.webhookDispatcher.unregisterLidResolver(sessionId)
     await session.connectionManager.disconnect()
     this.sessions.delete(sessionId)
 
@@ -206,7 +221,10 @@ export class SessionManager {
       connectionManager.adapter,
       this.webhookDispatcher,
       this.batchConfig,
-      this.logger
+      this.contactResolver,
+      this.logger,
+      this.lidMapping,
+      () => this.webhookDispatcher.markHistorySynced(sessionId)
     )
 
     this.sessions.set(sessionId, { connectionManager, messageHandler })

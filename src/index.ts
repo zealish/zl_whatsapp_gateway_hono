@@ -6,6 +6,9 @@ import { Container, DI } from './di/container.js'
 import { QueueDB } from './webhook/queue-db.js'
 import { WebhookQueue } from './webhook/queue.js'
 import { WebhookDispatcher } from './webhook/dispatcher.js'
+import { SQLiteContactStore } from './whatsapp/contact-store.js'
+import { ContactResolver } from './whatsapp/contact-resolver.js'
+import { LidMappingStore } from './whatsapp/lid-mapping.js'
 import { SessionManager } from './services/session-manager.js'
 import { WhatsAppService } from './services/whatsapp-service.js'
 import { createApp } from './app.js'
@@ -37,18 +40,42 @@ container.register(DI.WebhookDispatcher, () => {
   const logger = container.resolve<ReturnType<typeof createLogger>>(DI.Logger)
   const db = container.resolve<QueueDB>(DI.QueueDB)
   const queue = container.resolve<WebhookQueue>(DI.WebhookQueue)
-  return new WebhookDispatcher(config.WEBHOOK_DIR, db, queue, logger)
+  const lidMapping = container.resolve<LidMappingStore>(DI.LidMappingStore)
+  return new WebhookDispatcher(config.WEBHOOK_DIR, db, queue, logger, lidMapping, config.PENDING_RESOLUTION_RETENTION_MS)
+})
+
+// Register contact store (process-level singleton)
+container.register(DI.ContactStore, () => {
+  const logger = container.resolve<ReturnType<typeof createLogger>>(DI.Logger)
+  return new SQLiteContactStore(config.DB_PATH, config.CONTACT_CACHE_SIZE, logger)
+})
+
+// Register LID mapping store (process-level singleton)
+// Uses separate DB file to avoid locking conflicts with QueueDB and ContactStore
+container.register(DI.LidMappingStore, () => {
+  const logger = container.resolve<ReturnType<typeof createLogger>>(DI.Logger)
+  const lidDbPath = config.DB_PATH.replace(/\.db$/, '.lid.db')
+  return new LidMappingStore(lidDbPath, config.CONTACT_CACHE_SIZE, logger)
+})
+
+// Register contact resolver (process-level singleton)
+container.register(DI.ContactResolver, () => {
+  const logger = container.resolve<ReturnType<typeof createLogger>>(DI.Logger)
+  const contactStore = container.resolve<SQLiteContactStore>(DI.ContactStore)
+  const lidMapping = container.resolve<LidMappingStore>(DI.LidMappingStore)
+  return new ContactResolver(contactStore, logger, lidMapping)
 })
 
 // Register session manager
 container.register(DI.SessionManager, () => {
   const logger = container.resolve<ReturnType<typeof createLogger>>(DI.Logger)
   const webhookDispatcher = container.resolve<WebhookDispatcher>(DI.WebhookDispatcher)
-  return new SessionManager(config.SESSIONS_DIR, webhookDispatcher, logger, {
+  const contactResolver = container.resolve<ContactResolver>(DI.ContactResolver)
+  const lidMapping = container.resolve<LidMappingStore>(DI.LidMappingStore)
+  return new SessionManager(config.SESSIONS_DIR, webhookDispatcher, contactResolver, logger, {
     messages: config.WEBHOOK_BATCH_MESSAGES,
-    contacts: config.WEBHOOK_BATCH_CONTACTS,
     chats: config.WEBHOOK_BATCH_CHATS,
-  })
+  }, lidMapping)
 })
 
 // Register WhatsApp service
@@ -106,9 +133,20 @@ async function main(): Promise<void> {
     // Stop queue processing
     webhookQueue.stop()
 
+    // Destroy dispatcher (stop pending queue cleanup)
+    webhookDispatcher.destroy()
+
     // Close SQLite database
     const db = container.resolve<QueueDB>(DI.QueueDB)
     db.close()
+
+    // Close contact store
+    const contactStore = container.resolve<SQLiteContactStore>(DI.ContactStore)
+    contactStore.close()
+
+    // Close LID mapping store
+    const lidMapping = container.resolve<LidMappingStore>(DI.LidMappingStore)
+    lidMapping.close()
 
     // Disconnect all WhatsApp sessions
     await sessionManager.disconnectAll().catch((err) => {

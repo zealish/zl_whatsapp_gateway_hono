@@ -1,9 +1,9 @@
 import { z } from 'zod'
-import { jidSchema } from './common.js'
+import { recipientSchema, phoneNumberSchema } from './common.js'
 
 // ── Shared helpers ──
 
-const toField = { to: jidSchema.describe('Recipient JID (user@s.whatsapp.net or group@g.us)') }
+const toField = { to: recipientSchema.describe('Recipient: phone number (e.g. 6281234567890) or group JID (e.g. 120363...@g.us)') }
 
 const mediaFields = {
   url: z.string().url().optional().describe('Media URL'),
@@ -21,7 +21,7 @@ const sendTextBody = z.object({
   ...toField,
   text: z.string().min(1).max(65536).describe('Message text'),
   quotedMessageId: z.string().optional().describe('Message ID to quote'),
-  mentions: z.array(jidSchema).optional().describe('JIDs to @mention'),
+  mentions: z.array(phoneNumberSchema).optional().describe('Phone numbers to @mention (e.g. ["6281234567890"])'),
 })
 
 const sendImageBody = z
@@ -31,6 +31,7 @@ const sendImageBody = z
     ...mediaFields,
     caption: z.string().max(1024).optional().describe('Image caption'),
     mimetype: z.string().default('image/jpeg').describe('MIME type'),
+    viewOnce: z.boolean().optional().describe('Send as view-once media'),
   })
   .refine((d) => d.url || d.base64, mediaRefinement)
 
@@ -42,6 +43,7 @@ const sendVideoBody = z
     caption: z.string().max(1024).optional().describe('Video caption'),
     mimetype: z.string().default('video/mp4').describe('MIME type'),
     gifPlayback: z.boolean().optional().describe('Send as GIF'),
+    viewOnce: z.boolean().optional().describe('Send as view-once media'),
   })
   .refine((d) => d.url || d.base64, mediaRefinement)
 
@@ -52,6 +54,8 @@ const sendAudioBody = z
     ...mediaFields,
     mimetype: z.string().default('audio/mpeg').describe('MIME type'),
     ptt: z.boolean().default(false).describe('Push-to-talk (voice note)'),
+    seconds: z.number().min(0).optional().describe('Audio duration in seconds'),
+    viewOnce: z.boolean().optional().describe('Send as view-once media'),
   })
   .refine((d) => d.url || d.base64, mediaRefinement)
 
@@ -108,7 +112,7 @@ const sendPollBody = z.object({
 const sendForwardBody = z.object({
   type: z.literal('forward'),
   ...toField,
-  fromJid: jidSchema.describe('JID of the chat containing the message'),
+  fromJid: recipientSchema.describe('Chat JID containing the message (phone number or group JID)'),
   messageId: z.string().min(1).describe('Message ID to forward'),
 })
 
@@ -201,7 +205,7 @@ export const sendSchema = z.union([
 // ── Edit message ──
 
 export const editMessageSchema = z.object({
-  to: jidSchema.describe('Chat JID containing the message'),
+  to: recipientSchema.describe('Chat containing the message (phone number or group JID)'),
   messageId: z.string().min(1).describe('Message ID to edit'),
   text: z.string().min(1).max(65536).describe('New text content'),
 })
@@ -209,7 +213,7 @@ export const editMessageSchema = z.object({
 // ── Delete message ──
 
 export const deleteMessageSchema = z.object({
-  to: jidSchema.describe('Chat JID containing the message'),
+  to: recipientSchema.describe('Chat containing the message (phone number or group JID)'),
   messageId: z.string().min(1).describe('Message ID to delete'),
 })
 

@@ -1,11 +1,13 @@
 ---
 title: History Sync
-description: Sync existing contacts, chats, and messages when pairing a device
+description: Sync existing chats and messages when pairing a device
 ---
 
 ## Overview
 
-When you pair a new device, WhatsApp automatically syncs your existing contacts, chats, and messages. This is called **History Sync**.
+When you pair a new device, WhatsApp automatically syncs your existing chats and messages. This is called **History Sync**.
+
+Contacts are resolved lazily when messages arrive — no bulk contact synchronization occurs during history sync.
 
 ## How It Works
 
@@ -21,9 +23,6 @@ sequenceDiagram
     
     Note over Gateway: history.started event
 
-    WhatsApp-->>Gateway: Contacts batch
-    Note over Gateway: contacts.sync events
-
     WhatsApp-->>Gateway: Chats batch
     Note over Gateway: chats.sync events
 
@@ -33,7 +32,7 @@ sequenceDiagram
     WhatsApp-->>Gateway: Sync complete
     Note over Gateway: history.finished event
 
-    Note over Gateway: Realtime mode begins
+    Note over Gateway: Realtime events are delivered independently throughout
 ```
 
 ## Sync Events
@@ -45,27 +44,9 @@ Fired when history sync begins:
 ```json
 {
   "event": "history.started",
+  "historySync": true,
   "payload": {
     "historySessionId": "uuid-here"
-  }
-}
-```
-
-### contacts.sync
-
-Contact batches during sync:
-
-```json
-{
-  "event": "contacts.sync",
-  "payload": {
-    "contacts": [
-      {
-        "jid": "6281234567890@s.whatsapp.net",
-        "name": "John Doe",
-        "pushName": "John"
-      }
-    ]
   }
 }
 ```
@@ -77,6 +58,7 @@ Chat batches during sync:
 ```json
 {
   "event": "chats.sync",
+  "historySync": true,
   "payload": {
     "chats": [
       {
@@ -97,6 +79,7 @@ Message batches during sync:
 ```json
 {
   "event": "messages.sync",
+  "historySync": true,
   "payload": {
     "messages": [
       {
@@ -122,6 +105,7 @@ Fired when sync completes:
 ```json
 {
   "event": "history.finished",
+  "historySync": true,
   "payload": {
     "historySessionId": "uuid-here"
   }
@@ -135,14 +119,12 @@ History sync delivers data in batches:
 | Type | Default Batch Size | Config |
 |------|-------------------|--------|
 | Messages | 250 | `WEBHOOK_BATCH_MESSAGES` |
-| Contacts | 500 | `WEBHOOK_BATCH_CONTACTS` |
 | Chats | 200 | `WEBHOOK_BATCH_CHATS` |
 
 Configure in `.env`:
 
 ```bash
 WEBHOOK_BATCH_MESSAGES=250
-WEBHOOK_BATCH_CONTACTS=500
 WEBHOOK_BATCH_CHATS=200
 ```
 
@@ -154,95 +136,58 @@ All events from a single history sync session share the same `historySessionId`:
 {
   "eventId": "...",
   "historySessionId": "abc-123-def",
+  "historySync": true,
   "event": "messages.sync"
 }
 ```
 
-Use this to correlate events from the same sync session.
+Use `historySessionId` to correlate events from the same sync session.
+Use `historySync` to distinguish history data from realtime data.
 
 ## Handling Sync Events
 
-### Buffering Strategy
+### Independent Pipelines
 
-Since sync events arrive in batches, consider buffering:
+History sync and realtime events are delivered through **independent pipelines**. They never block each other.
 
-```javascript
-class HistorySyncBuffer {
-  constructor() {
-    this.contacts = [];
-    this.chats = [];
-    this.messages = [];
-  }
+- **History events** (`historySync: true`) — delivered as background batches
+- **Realtime events** (`historySync: false`) — delivered immediately, never delayed
 
-  addEvent(event) {
-    switch (event.event) {
-      case 'contacts.sync':
-        this.contacts.push(...event.payload.contacts);
-        break;
-      case 'chats.sync':
-        this.chats.push(...event.payload.chats);
-        break;
-      case 'messages.sync':
-        this.messages.push(...event.payload.messages);
-        break;
-    }
-  }
+You can process both simultaneously. Use the `historySync` flag to route events appropriately.
 
-  async flush() {
-    // Save to database
-    await db.contacts.bulkInsert(this.contacts);
-    await db.chats.bulkInsert(this.chats);
-    await db.messages.bulkInsert(this.messages);
-    
-    // Clear buffer
-    this.contacts = [];
-    this.chats = [];
-    this.messages = [];
-  }
-}
-```
-
-### Transition to Realtime
-
-After `history.finished`, switch to realtime mode:
+### Processing Strategy
 
 ```javascript
-const syncBuffer = new HistorySyncBuffer();
-let isSyncing = false;
-
 function handleWebhook(event) {
-  if (event.event === 'history.started') {
-    isSyncing = true;
-    return;
-  }
-
-  if (event.event === 'history.finished') {
-    isSyncing = false;
-    syncBuffer.flush();
-    return;
-  }
-
-  if (isSyncing) {
-    // Buffer during sync
-    syncBuffer.addEvent(event);
+  if (event.historySync) {
+    // History event — batch insert
+    handleHistoryEvent(event);
   } else {
-    // Process realtime events immediately
-    processRealtimeEvent(event);
+    // Realtime event — process immediately
+    handleRealtimeEvent(event);
   }
 }
 ```
 
 ## Ordering
 
-Events are delivered in order within each sync session. However, different sync sessions may interleave.
+History and realtime events use **independent sequence counters**. There is no ordering guarantee between the two pipelines.
 
-Use `sequence` numbers for ordering verification:
+- **Within history**: events are ordered by sequence (1, 2, 3, ...)
+- **Within realtime**: events are ordered by sequence (1, 2, 3, ...)
+- **Between pipelines**: no ordering relationship
+
+Use `historySync` and `sequence` together for ordering:
 
 ```javascript
-const lastSequence = new Map();
+const lastSequence = {
+  history: new Map(),
+  realtime: new Map(),
+};
 
 function isOutOfOrder(event) {
-  const last = lastSequence.get(event.instanceId) || 0;
+  const pipeline = event.historySync ? 'history' : 'realtime';
+  const last = lastSequence[pipeline].get(event.instanceId) || 0;
   return event.sequence <= last;
 }
 ```
@@ -259,9 +204,10 @@ async function handleFirstConnect(instanceId) {
   await waitForEvent('history.finished', instanceId);
   
   console.log(`Sync complete for ${instanceId}`);
-  // Now ready for realtime events
 }
 ```
+
+Note: Realtime events are delivered immediately, even during history sync. You do not need to wait for `history.finished` to process realtime events.
 
 ### Incremental Updates
 
@@ -303,6 +249,6 @@ function handleRealtimeMessage(event) {
 ---
 
 > [!info]
-> History sync is a one-time process per device pairing. Once complete, only new events are delivered.
+> History sync is a one-time process per device pairing. Once complete, only realtime events are delivered. Realtime events are **never delayed** by history sync — both pipelines run independently.
 
 View full API reference for [Webhook events](/reference#tag/Webhook).

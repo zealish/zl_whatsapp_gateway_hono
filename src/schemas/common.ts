@@ -1,15 +1,22 @@
 import { z } from 'zod'
 
 /**
- * WhatsApp JID format: user@s.whatsapp.net or group@g.us
+ * Recipient identifier: bare phone number (personal) or @g.us JID (group).
+ * - Digits only (8-15 chars) → personal contact (will be converted to @s.whatsapp.net server-side)
+ * - Ends with @g.us → group JID (passthrough)
+ * - Ends with @s.whatsapp.net → backward compat (accepted, stripped internally)
  */
-export const jidSchema = z
+export const recipientSchema = z
   .string()
   .min(1)
-  .regex(
-    /^[\d-]+(@s\.whatsapp\.net|@g\.us|@lid)$/,
-    'Invalid JID format. Expected: number@s.whatsapp.net | number@g.us | number@lid'
+  .refine(
+    (v) =>
+      /^\d{8,15}$/.test(v) || /^[\d-]+(@s\.whatsapp\.net|@g\.us)$/.test(v),
+    'Invalid recipient. Use bare phone number (e.g. 6281234567890) or group JID (e.g. 120363...@g.us)'
   )
+
+/** @deprecated Use recipientSchema for new code */
+export const jidSchema = recipientSchema // backward compat alias
 
 export const sessionIdSchema = z
   .string()
