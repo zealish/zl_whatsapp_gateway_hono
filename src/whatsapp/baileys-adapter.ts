@@ -137,6 +137,12 @@ export class BaileysAdapter extends EventEmitter implements IBaileysAdapter {
           (lastDisconnect?.error as any)?.output?.statusCode ??
           (lastDisconnect?.error as any)?.statusCode ?? 0
 
+        this.logger.warn({
+          statusCode,
+          error: lastDisconnect?.error?.message,
+          stack: (lastDisconnect?.error as any)?.stack?.substring(0, 200)
+        }, 'Connection close details')
+
         this.emit('connection.close', { statusCode })
         this.logger.warn({ statusCode }, 'Connection closed')
 
