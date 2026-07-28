@@ -71,6 +71,18 @@ export class ConnectionManager {
       return
     }
 
+    if (statusCode === DisconnectReason.forbidden) {
+      this.logger.warn({ statusCode }, 'Session forbidden, will not reconnect')
+      return
+    }
+
+    // Stop reconnect on non-recoverable 4xx errors (e.g. 405 Method Not Allowed)
+    // These indicate corrupted auth state that cannot be recovered by retrying
+    if (statusCode >= 400 && statusCode < 500 && statusCode !== DisconnectReason.connectionLost) {
+      this.logger.warn({ statusCode }, 'Non-recoverable client error, will not reconnect')
+      return
+    }
+
     if (this.reconnectAttempts >= this.maxReconnectAttempts) {
       this.logger.warn(
         { attempts: this.reconnectAttempts },
