@@ -24,6 +24,20 @@ import { useFileAuthState } from './auth-state.js'
 import { MessageStore } from './message-store.js'
 import { AppError } from '../lib/errors.js'
 
+const MEDIA_TYPES = new Set([
+  'imageMessage',
+  'videoMessage',
+  'audioMessage',
+  'documentMessage',
+  'stickerMessage',
+])
+
+function getMediaType(msg: { message?: any | null }): string | undefined {
+  const inner = msg.message
+  if (!inner) return undefined
+  return Object.keys(inner)[0]
+}
+
 /**
  * Wraps Baileys WASocket behind IBaileysAdapter.
  * This is the ONLY file that imports 'baileys' directly.
@@ -352,6 +366,12 @@ export class BaileysAdapter extends EventEmitter implements IBaileysAdapter {
     if (!msg) {
       throw new AppError('Message not found in store', 404, 'NOT_FOUND')
     }
+
+    const mediaType = getMediaType(msg)
+    if (!mediaType || !MEDIA_TYPES.has(mediaType)) {
+      throw new AppError(`Message is not a media message (type: ${mediaType ?? 'none'})`, 400, 'VALIDATION_ERROR')
+    }
+
     try {
       return await downloadMediaMessage(msg, 'buffer', {}, {
         reuploadRequest: (m) => this.socket!.updateMediaMessage(m),
@@ -362,7 +382,12 @@ export class BaileysAdapter extends EventEmitter implements IBaileysAdapter {
       if (statusCode === 400) {
         throw new AppError('Message is not a media message', 400, 'VALIDATION_ERROR')
       }
-      throw new AppError(`Failed to download media: ${err?.message ?? 'unknown error'}`, 500, 'INTERNAL_ERROR')
+      this.logger.error({ err, msgId, mediaType, cause: err?.cause?.message, code: err?.code }, 'Media download failed')
+      throw new AppError(
+        `Failed to download media for message ${msgId}: ${err?.message}${err?.cause?.message ? ` (cause: ${err.cause.message})` : ''}`,
+        500,
+        'INTERNAL_ERROR',
+      )
     }
   }
 
@@ -373,6 +398,11 @@ export class BaileysAdapter extends EventEmitter implements IBaileysAdapter {
       throw new AppError('Message not found in store', 404, 'NOT_FOUND')
     }
     const { message: msg } = found
+
+    const mediaType = getMediaType(msg)
+    if (!mediaType || !MEDIA_TYPES.has(mediaType)) {
+      throw new AppError(`Message is not a media message (type: ${mediaType ?? 'none'})`, 400, 'VALIDATION_ERROR')
+    }
 
     try {
       const buffer = await downloadMediaMessage(msg, 'buffer', {}, {
@@ -393,7 +423,12 @@ export class BaileysAdapter extends EventEmitter implements IBaileysAdapter {
       if (statusCode === 400) {
         throw new AppError('Message is not a media message', 400, 'VALIDATION_ERROR')
       }
-      throw new AppError(`Failed to download media: ${err?.message ?? 'unknown error'}`, 500, 'INTERNAL_ERROR')
+      this.logger.error({ err, msgId, mediaType, cause: err?.cause?.message, code: err?.code }, 'Media download failed')
+      throw new AppError(
+        `Failed to download media for message ${msgId}: ${err?.message}${err?.cause?.message ? ` (cause: ${err.cause.message})` : ''}`,
+        500,
+        'INTERNAL_ERROR',
+      )
     }
   }
 
