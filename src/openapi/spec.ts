@@ -934,6 +934,42 @@ export function createOpenApiSpec(config: OpenApiSpecOptions) {
         },
       },
     },
+    '/session/{id}/contact/{jid}/history': {
+      post: {
+        tags: ['Contact'],
+        summary: 'Sync message history for a contact',
+        description: 'Manually sync 3-month message history for a specific contact. Returns a syncId to track the async operation via webhook events.',
+        parameters: [
+          { name: 'id', in: 'path', required: true, schema: { type: 'string' }, description: 'Session ID' },
+          { name: 'jid', in: 'path', required: true, schema: { type: 'string' }, description: 'Contact JID or phone number' },
+        ],
+        responses: {
+          202: {
+            description: 'Sync started',
+            content: {
+              'application/json': {
+                schema: {
+                  type: 'object',
+                  properties: {
+                    success: { type: 'boolean', enum: [true] },
+                    data: {
+                      type: 'object',
+                      properties: {
+                        syncId: { type: 'string', description: 'ID to track sync progress via webhook events' },
+                        status: { type: 'string', enum: ['pending'] },
+                      },
+                      required: ['syncId', 'status'],
+                    },
+                  },
+                  required: ['success', 'data'],
+                },
+              },
+            },
+          },
+          404: { description: 'Session or contact not found', content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } } },
+        },
+      },
+    },
 
     // ── Group ──
     '/session/{id}/group': {

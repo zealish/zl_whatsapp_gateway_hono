@@ -3,6 +3,46 @@ title: History Sync
 description: Sync existing chats and messages when pairing a device
 ---
 
+## Manual Contact History Sync
+
+Manually sync message history for a specific contact:
+
+```bash
+POST /session/{id}/contact/{jid}/history
+```
+
+**Parameters:**
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `id` | string | Session ID |
+| `jid` | string | Contact JID or phone number (e.g., `6281234567890`) |
+
+**Response:**
+
+```json
+{
+  "success": true,
+  "data": {
+    "syncId": "uuid-here",
+    "status": "pending"
+  }
+}
+```
+
+Returns HTTP 202 (Accepted). Use `syncId` to track progress via webhook events.
+
+**Events:**
+
+The sync triggers `messages.sync` events for each message batch. Listen for these on your webhook endpoint.
+
+**Example:**
+
+```bash
+curl -X POST http://localhost:3000/session/my-session/contact/6281234567890/history \
+  -H "X-API-Key: your-api-key"
+```
+
 ## Overview
 
 When you pair a new device, WhatsApp automatically syncs your existing chats and messages. This is called **History Sync**.
