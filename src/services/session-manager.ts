@@ -9,12 +9,14 @@ import type { ContactResolver } from '../whatsapp/contact-resolver.js'
 import type { LidMappingStore } from '../whatsapp/lid-mapping.js'
 import { ConnectionManager } from '../whatsapp/connection-manager.js'
 import { MessageHandler } from '../whatsapp/message-handler.js'
+import { ContactSyncTracker } from '../whatsapp/contact-sync-tracker.js'
 import type { BatchConfig } from '../whatsapp/history-sync-handler.js'
 import { ConflictError, NotFoundError } from '../lib/errors.js'
 
 interface Session {
   connectionManager: ConnectionManager
   messageHandler: MessageHandler
+  contactSyncTracker: ContactSyncTracker
 }
 
 /**
@@ -216,6 +218,8 @@ export class SessionManager {
       this.logger
     )
 
+    const contactSyncTracker = new ContactSyncTracker(this.logger)
+
     const messageHandler = new MessageHandler(
       sessionId,
       connectionManager.adapter,
@@ -224,9 +228,10 @@ export class SessionManager {
       this.contactResolver,
       this.logger,
       this.lidMapping,
-      () => this.webhookDispatcher.markHistorySynced(sessionId)
+      () => this.webhookDispatcher.markHistorySynced(sessionId),
+      contactSyncTracker
     )
 
-    this.sessions.set(sessionId, { connectionManager, messageHandler })
+    this.sessions.set(sessionId, { connectionManager, messageHandler, contactSyncTracker })
   }
 }

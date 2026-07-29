@@ -18,6 +18,9 @@ export const canonicalEventSchema = z.enum([
   'messages.sync',
   'history.progress',
   'history.finished',
+  // Contact sync events
+  'sync.completed',
+  'sync.failed',
 ])
 
 // ── Legacy (deprecated) Baileys event names ──

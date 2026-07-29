@@ -8,7 +8,7 @@ import type {
   GroupParticipant,
 } from '../types/whatsapp.js'
 import type { SessionManager } from './session-manager.js'
-import { NotFoundError } from '../lib/errors.js'
+import { NotFoundError, AppError, ConflictError } from '../lib/errors.js'
 import { recipientToJid, phoneToJid, extractPhoneFromJid } from '../whatsapp/normalizers.js'
 
 /**
@@ -214,5 +214,61 @@ export class WhatsAppService implements IWhatsAppService {
     const session = this.sessionManager.getSessionOrThrow(sessionId)
     const groups = await session.connectionManager.adapter.getAllGroups()
     return this.sanitizeGroups(groups)
+  }
+
+  async syncContactHistory(
+    sessionId: string,
+    recipient: string,
+    options?: { monthsAgo?: number }
+  ): Promise<{ syncId: string }> {
+    const jid = recipientToJid(recipient)
+    const session = this.sessionManager.getSessionOrThrow(sessionId)
+
+    const status = session.connectionManager.getStatus()
+    if (status.state !== 'open') {
+      throw new AppError('Session not connected', 503, 'SERVICE_UNAVAILABLE')
+    }
+
+    const contact = await session.connectionManager.adapter.getContact(jid)
+    if (!contact) {
+      throw new NotFoundError('Contact', recipient)
+    }
+
+    if (session.contactSyncTracker.hasPendingForJid(jid)) {
+      throw new ConflictError(`Sync already pending for contact ${recipient}`)
+    }
+
+    const monthsAgo = options?.monthsAgo ?? 3
+    const cutoffTimestamp = Date.now() - monthsAgo * 30 * 24 * 60 * 60 * 1000
+    const syncId = crypto.randomUUID()
+
+    session.contactSyncTracker.register(syncId, jid, cutoffTimestamp)
+
+    const messageStore = session.connectionManager.adapter.getMessageStore()
+    const oldestMsg = messageStore.getOldestMessage(jid)
+
+    if (oldestMsg) {
+      session.connectionManager.adapter
+        .fetchMessageHistory(50, oldestMsg.key, oldestMsg.messageTimestamp)
+        .catch((err) => {
+          this.logger.error({ err, syncId, jid }, 'Failed to fetch message history')
+          const pending = session.contactSyncTracker.complete(syncId)
+          if (pending) {
+            session.messageHandler.dispatchSyncFailed(syncId, jid, 'fetch_error', err.message)
+          }
+        })
+    } else {
+      session.connectionManager.adapter
+        .fetchMessageHistory(50, { remoteJid: jid, id: '' }, Date.now())
+        .catch((err) => {
+          this.logger.error({ err, syncId, jid }, 'Failed to fetch message history')
+          const pending = session.contactSyncTracker.complete(syncId)
+          if (pending) {
+            session.messageHandler.dispatchSyncFailed(syncId, jid, 'fetch_error', err.message)
+          }
+        })
+    }
+
+    return { syncId }
   }
 }

@@ -24,5 +24,22 @@ export function createContactRoutes(whatsappService: IWhatsAppService): Hono {
     return c.json(successResponse(contact))
   })
 
+  // POST /session/:id/contact/:recipient/history
+  // Manually sync 3-month message history for a specific contact
+  routes.post('/:id/contact/:recipient/history', async (c) => {
+    const sessionId = c.req.param('id')
+    const recipient = c.req.param('recipient')
+
+    const result = await whatsappService.syncContactHistory(sessionId, recipient, { monthsAgo: 3 })
+
+    return c.json(
+      successResponse({
+        syncId: result.syncId,
+        status: 'pending',
+      }),
+      202
+    )
+  })
+
   return routes
 }

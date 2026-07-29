@@ -85,15 +85,23 @@ export interface IBaileysAdapter {
     setting: 'announcement' | 'not_announcement' | 'locked' | 'unlocked'
   ): Promise<void>
   getAllGroups(): Promise<GroupInfo[]>
-
   on(event: string, handler: (...args: unknown[]) => void): void
   off(event: string, handler: (...args: unknown[]) => void): void
-
   /**
    * Resolve a @lid JID to a phone number using Baileys's internal state.
    * Returns the phone number string or null if unresolvable.
    */
   resolveLidToPhone(lid: string): Promise<string | null>
+
+  // History operations
+  fetchMessageHistory(
+    count: number,
+    oldestMsgKey: { remoteJid: string; id: string },
+    oldestMsgTimestamp: number
+  ): Promise<string>
+  getMessageStore(): {
+    getOldestMessage(jid: string): { key: { id: string; remoteJid: string }; messageTimestamp: number } | undefined
+  }
 }
 
 // ── WhatsApp Service Interface ──
@@ -128,10 +136,13 @@ export interface IWhatsAppService {
   revokeGroupInviteCode(sessionId: string, jid: string): Promise<string>
   joinGroupByInviteCode(sessionId: string, code: string): Promise<GroupInfo>
   getGroupInfoByInviteCode(sessionId: string, code: string): Promise<GroupInfo | null>
-  updateGroupSettings(
-    sessionId: string,
-    jid: string,
-    setting: 'announcement' | 'not_announcement' | 'locked' | 'unlocked'
-  ): Promise<void>
+  updateGroupSettings(sessionId: string, jid: string, setting: 'announcement' | 'not_announcement' | 'locked' | 'unlocked'): Promise<void>
   getAllGroups(sessionId: string): Promise<GroupInfo[]>
+
+  // History operations
+  syncContactHistory(
+    sessionId: string,
+    recipient: string,
+    options?: { monthsAgo?: number }
+  ): Promise<{ syncId: string }>
 }

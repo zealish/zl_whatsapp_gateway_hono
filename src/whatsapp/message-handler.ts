@@ -5,6 +5,7 @@ import { HistorySyncHandler, type BatchConfig } from './history-sync-handler.js'
 import type { ContactResolver } from './contact-resolver.js'
 import type { ContactEntry } from './contact-store.js'
 import type { LidMappingStore } from './lid-mapping.js'
+import type { ContactSyncTracker } from './contact-sync-tracker.js'
 import {
   normalizeUpsertMessage,
   normalizeMessageUpdate,
@@ -50,6 +51,7 @@ export class MessageHandler {
   private historySyncHandler: HistorySyncHandler
   private contactResolver: ContactResolver
   private lidMapping: LidMappingStore | null
+  private contactSyncTracker: ContactSyncTracker
 
   constructor(
     sessionId: string,
@@ -59,13 +61,15 @@ export class MessageHandler {
     contactResolver: ContactResolver,
     logger: pino.Logger,
     lidMapping?: LidMappingStore | null,
-    onSyncComplete?: () => void
+    onSyncComplete?: () => void,
+    contactSyncTracker?: ContactSyncTracker
   ) {
     this.sessionId = sessionId
     this.adapter = adapter
     this.dispatcher = dispatcher
     this.contactResolver = contactResolver
     this.lidMapping = lidMapping ?? null
+    this.contactSyncTracker = contactSyncTracker!
     this.logger = logger.child({ module: 'MessageHandler', sessionId })
 
     this.historySyncHandler = new HistorySyncHandler(
@@ -83,6 +87,7 @@ export class MessageHandler {
     // ── History sync events ──
     this.adapter.on('messaging-history.set', (data: unknown) => {
       this.historySyncHandler.handleHistorySet(data as any)
+      this.handleContactHistorySet(data as any)
     })
 
     this.adapter.on('messaging-history.status', (data: unknown) => {
@@ -277,5 +282,85 @@ export class MessageHandler {
     }
 
     this.logger.debug({ count: rawContacts.length }, 'Contacts synced to store')
+  }
+
+  /**
+   * Handle messaging-history.set for contact-specific sync tracking.
+   * Filters messages for pending contact syncs and emits webhook on completion.
+   */
+  private handleContactHistorySet(data: {
+    messages?: any[]
+    isLatest?: boolean
+  }): void {
+    const messages = data.messages || []
+    if (messages.length === 0) return
+
+    for (const msg of messages) {
+      const jid = msg.key?.remoteJid
+      if (!jid) continue
+
+      const pendingSync = this.contactSyncTracker.getByJid(jid)
+      if (!pendingSync) continue
+
+      const msgTimestamp =
+        typeof msg.messageTimestamp === 'number'
+          ? msg.messageTimestamp * 1000
+          : msg.messageTimestamp?.toMillis?.() ?? Date.now()
+
+      if (msgTimestamp < pendingSync.cutoffTimestamp) continue
+
+      this.contactSyncTracker.increment(pendingSync.syncId, 1, msgTimestamp)
+    }
+
+    if (data.isLatest) {
+      for (const msg of messages) {
+        const jid = msg.key?.remoteJid
+        if (!jid) continue
+
+        const pendingSync = this.contactSyncTracker.getByJid(jid)
+        if (!pendingSync) continue
+
+        const completed = this.contactSyncTracker.complete(pendingSync.syncId)
+        if (completed) {
+          const stoppedReason =
+            completed.oldestTimestamp && completed.oldestTimestamp <= completed.cutoffTimestamp
+              ? 'age_limit'
+              : 'no_more_history'
+
+          this.dispatcher.dispatch(this.sessionId, 'sync.completed', {
+            syncId: completed.syncId,
+            recipient: completed.jid,
+            synced: completed.synced,
+            oldestTimestamp: completed.oldestTimestamp,
+            stoppedReason,
+          })
+
+          this.logger.info(
+            { syncId: completed.syncId, jid: completed.jid, synced: completed.synced },
+            'Contact sync completed'
+          )
+        }
+        break
+      }
+    }
+  }
+
+  /**
+   * Emit sync.failed webhook for a pending contact sync.
+   */
+  dispatchSyncFailed(
+    syncId: string,
+    jid: string,
+    reason: 'fetch_error' | 'session_disconnected' | 'sync_timeout',
+    error?: string
+  ): void {
+    this.dispatcher.dispatch(this.sessionId, 'sync.failed', {
+      syncId,
+      recipient: jid,
+      reason,
+      error: error ?? reason,
+    })
+
+    this.logger.warn({ syncId, jid, reason }, 'Contact sync failed')
   }
 }

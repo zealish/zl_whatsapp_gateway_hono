@@ -514,4 +514,22 @@ export class BaileysAdapter extends EventEmitter implements IBaileysAdapter {
       )
     }
   }
+
+  async fetchMessageHistory(
+    count: number,
+    oldestMsgKey: { remoteJid: string; id: string },
+    oldestMsgTimestamp: number
+  ): Promise<string> {
+    this.assertConnected()
+    const syncId = await this.socket!.fetchMessageHistory(
+      count,
+      oldestMsgKey as any,
+      oldestMsgTimestamp
+    )
+    return syncId
+  }
+
+  getMessageStore(): { getOldestMessage(jid: string): { key: { id: string; remoteJid: string }; messageTimestamp: number } | undefined } {
+    return this.messageStore as unknown as { getOldestMessage(jid: string): { key: { id: string; remoteJid: string }; messageTimestamp: number } | undefined }
+  }
 }

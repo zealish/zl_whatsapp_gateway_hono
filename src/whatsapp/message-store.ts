@@ -113,4 +113,16 @@ export class MessageStore {
     }
     return count
   }
+
+  /**
+   * Get the oldest message in a specific chat.
+   * Uses insertion order - first message in Map is the oldest.
+   * Returns undefined if no messages for the chat.
+   */
+  getOldestMessage(jid: string): WAMessage | undefined {
+    const normalizedJid = stripDeviceSuffix(jid)
+    const chat = this.store.get(normalizedJid)
+    if (!chat?.size) return undefined
+    return chat.values().next().value
+  }
 }
