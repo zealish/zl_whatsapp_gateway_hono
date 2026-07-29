@@ -52,7 +52,7 @@ export function createApp(container: Container): Hono {
   }
 
   // ── Protected routes (API key required) ──
-  api.use('/session/*', apiKeyMiddleware(config.API_KEY))
+  api.use('/session/**', apiKeyMiddleware(config.API_KEY))
 
   api.route('/session', createSessionRoutes(sessionManager, whatsappService))
   api.route('/session', createMessageRoutes(whatsappService))
@@ -62,7 +62,7 @@ export function createApp(container: Container): Hono {
   api.route('/session', createWebhookConfigRoutes(webhookDispatcher))
 
   // ── DLQ routes (protected) ──
-  api.use('/dlq/*', apiKeyMiddleware(config.API_KEY))
+  api.use('/dlq/**', apiKeyMiddleware(config.API_KEY))
   api.route('/dlq', createDLQRoutes(queueDB))
 
   // ── Error handler ──
